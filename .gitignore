@@ -1,0 +1,10 @@
+# python stuff
+__pycache__
+.ipynb_checkpoints
+
+# local stuff
+/config/config-local.yaml
+/_datasets
+/_checkpoints
+/_runs
+/test
