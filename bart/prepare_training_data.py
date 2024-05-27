@@ -130,7 +130,7 @@ def create_training_instances_from_doc(
                 mask_span_distribution=None,
             )
         if deletion_ratio > 0.0:
-            source = add_deletion_noise(source, deletion_ratio, tokenizer)
+            source = add_deletion_noise(source, deletion_ratio)
         if infilling_ratio > 0.0:
             source = add_mask_with_span(
                 source,
@@ -260,13 +260,13 @@ def add_mask_with_span(
             rptr += 1
 
         # weighted random
-        start_cand_idx = utils.wnext(lptr, rptr - length, time=-np.random.randint(1, 2))
-        # start_cand_idx = utils.wnext(lptr, rptr - length, time=-np.random.randint(10, 16))
+        start_cand_idx = utils.wnext(lptr, rptr - length, time=-np.random.randint(8, 16))
 
         # all tokens from [start_cand_idx, start_cand_idx + length - 1] will be masked
         for j in range(length):
             for idx in cand_indices[start_cand_idx + j]:
                 result_tokens[idx] = SpecialToken.PLACEHOLDER
+
         # we will use Bert's mask strategy 80/0/20 here
         # (corresponding to replace with mask/keep/random)
         new_token = None
@@ -284,7 +284,7 @@ def add_mask_with_span(
 
     return result_tokens
 
-def add_deletion_noise(tokens: TokenList, deletion_ratio: float, tokenizer: Tokenizer) -> TokenList:
+def add_deletion_noise(tokens: TokenList, deletion_ratio: float) -> TokenList:
     num_deletions = int((len(tokens) - 2) * deletion_ratio)
     indices_to_delete = np.random.permutation(len(tokens) - 2)[:num_deletions]
     indices_to_delete += 1  # add an offset to skip SOS token
@@ -294,7 +294,11 @@ def add_deletion_noise(tokens: TokenList, deletion_ratio: float, tokenizer: Toke
     assert len(result_tokens) == len(tokens) - num_deletions
     return result_tokens
 
-def add_insertion_noise(tokens: TokenList, insertion_ratio: float, tokenizer: Tokenizer) -> TokenList:
+def add_insertion_noise(
+    tokens: TokenList,
+    insertion_ratio: float,
+    tokenizer: Tokenizer,
+) -> TokenList:
     sz = len(tokens)
     num_to_insert = int((sz - 2) * insertion_ratio)
     insert_indices = np.random.permutation(sz - 2 + num_to_insert)[:num_to_insert] + 1  # add an offset to skip SOS token
