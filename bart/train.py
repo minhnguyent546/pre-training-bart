@@ -242,7 +242,7 @@ def eval_model(
                 encoder_attn_mask=input_mask,
                 labels=labels,
             )
-            loss = outputs.loss
+            loss = outputs.lm_loss
             accum_valid_loss += loss.item()
 
             batch_iter.set_postfix({'loss': f'{loss.item():0.3f}'})
