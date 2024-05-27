@@ -181,7 +181,7 @@ def train_model(args: argparse.Namespace):
                 valid_results = eval_model(model, test_data_loader, device)
                 writer.add_scalars('loss/', {
                     'train': accum_train_loss / valid_interval,
-                    'valid': valid_results['mlm_loss'],
+                    'valid': valid_results['loss'],
                 }, global_step + 1)
                 writer.flush()
                 accum_train_loss = 0.0
