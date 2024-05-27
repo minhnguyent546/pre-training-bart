@@ -141,10 +141,9 @@ class BartForGeneration(BartBase):
             encoder_output=encoder_output,
         )  # (batch_size, seq_length, hidden_size)
 
-        lm_logits = None
+        lm_logits = self.lm_head(outputs.decoder_output)
         lm_loss = None
         if labels is not None:
-            lm_logits = self.lm_head(outputs.decoder_output)
             lm_loss = self.get_lm_loss(lm_logits, labels)
 
         return BartForGenerationOutput(
