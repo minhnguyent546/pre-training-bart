@@ -219,7 +219,7 @@ def eval_model(
             input_mask = batch['input_mask'].to(device).type(torch.int32)
             labels = batch['labels'].to(device).type(torch.int64)
 
-            logits, loss = model(input_ids, input_mask, labels)
+            logits, loss = model(input_ids, input_mask=input_mask, labels=labels)
             accum_valid_loss += loss.item()
 
             batch_iter.set_postfix({'loss': f'{loss.item():0.3f}'})
