@@ -1,5 +1,6 @@
 from tqdm.autonotebook import tqdm
 
+from torch import Tensor
 import torch
 
 import datasets
@@ -52,10 +53,10 @@ def compute_dataset_bleu(
         if item_idx >= total_steps:
             break
 
-        input_ids = item['input_ids'].type(torch.int32)
-        input_mask = item['input_mask'].type(torch.int32)
-        source_tokens = item['source_tokens'].type(torch.int32)
-        target_tokens = item['target_tokens'].type(torch.int32)
+        input_ids = Tensor(item['input_ids']).type(torch.int32)
+        input_mask = Tensor(item['input_mask']).type(torch.int32)
+        source_tokens = item['source_tokens']
+        target_tokens = item['target_tokens']
 
         if beam_size is not None and beam_size > 1:
             # decoding with beam search

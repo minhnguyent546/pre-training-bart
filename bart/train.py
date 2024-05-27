@@ -183,6 +183,7 @@ def train_model(args: argparse.Namespace):
             writer.flush()
 
             if (global_step + 1) % valid_interval == 0:
+                valid_results = eval_model(model, test_data_loader, device)
                 valid_bleu = compute_dataset_bleu(
                     model,
                     test_data_loader.dataset,
@@ -195,7 +196,6 @@ def train_model(args: argparse.Namespace):
                     args.logging_interval,
                     args.compute_bleu_max_steps,
                 )
-                valid_results = eval_model(model, test_data_loader, device)
                 writer.add_scalars('loss', {
                     'train': accum_train_loss / valid_interval,
                     'valid': valid_results['loss'],
