@@ -1,5 +1,5 @@
 """
-A standard transformer model as in Vaswani et al. (2017)
+A standard transformer model as in Vaswani et al. (2017).
 """
 
 from dataclasses import dataclass
@@ -18,6 +18,8 @@ from . import utils
 class TransformerConfig:
     src_pad_token_id: int
     target_pad_token_id: int
+    target_start_token_id: int
+    target_end_token_id: int
     src_vocab_size: int = 32000
     target_vocab_size: int | None = None  # `src_vocab_size` will be used as common vocab size if `shared_vocab` = `True`
     src_seq_length: int = 128
@@ -28,7 +30,7 @@ class TransformerConfig:
     tie_weights: bool = True  # whether to use tied weights between token embeddings and the pre-softmax linear layer
     hidden_size: int = 512
     num_heads: int = 8
-    num_layers: int = 6
+    num_hidden_layers: int = 6
     intermediate_size: int = 2048
     dropout: float = 0.1
     attn_dropout: float = 0.1
@@ -233,7 +235,7 @@ class TransformerEncoder(nn.Module):
         super().__init__()
         self.layers = nn.ModuleList([
             TransformerEncoderLayer(config)
-            for _ in range(config.num_layers)
+            for _ in range(config.num_hidden_layers)
         ])
 
     def forward(self, x: Tensor, attn_mask: Tensor | None = None) -> Tensor:
@@ -246,7 +248,7 @@ class TransformerDecoder(nn.Module):
         super().__init__()
         self.layers = nn.ModuleList([
             TransformerDecoderLayer(config)
-            for _ in range(config.num_layers)
+            for _ in range(config.num_hidden_layers)
         ])
 
     def forward(
@@ -269,13 +271,13 @@ class TransformerBase(nn.Module):
     def _tie_weights(self):
         raise NotImplementedError()
 
-    def _init_module_weights_fn(self):
+    def _init_module_weights_fn(self, module, std: float = 0.02):
         raise NotImplementedError()
 
     def post_init(self) -> None:
         self._init_model_weights()
 
-    def _init_model_weights(self, std: float = 0.02) -> None:
+    def _init_model_weights(self, std: float = 0.02):
         self.apply(lambda module: self._init_module_weights_fn(module, std=std))
 
     def num_params(self) -> int:
@@ -291,7 +293,7 @@ class Transformer(TransformerBase):
             config.max_position_embeddings,
             config.dropout,
         )
-        if not self.shared_vocab and config.target_vocab_size is None:
+        if not self.config.shared_vocab and config.target_vocab_size is None:
             raise ValueError('`target_vocab_size` must be provided if `shared_vocab` is `False`')
         self.target_embeddings = TransformerEmbeddings(
             config.target_vocab_size or config.src_vocab_size,
@@ -302,14 +304,21 @@ class Transformer(TransformerBase):
         self.encoder = TransformerEncoder(config)
         self.decoder = TransformerDecoder(config)
 
-        self._tie_weights()
+        if self.config.tie_weights:
+            self._tie_weights()
         self.post_init()
 
+    @property
+    def src_token_embeddings(self):
+        return self.src_embeddings.token_embeddings
+
+    @property
+    def target_token_embeddings(self):
+        return self.target_embeddings.token_embeddings
+
     def _tie_weights(self) -> None:
-        if not self.config.tie_weights:
-            return
-        if self.target_embeddings.token_embeddings.shape == self.src_embeddings.token_embeddings.shape:
-            self.target_embeddings.token_embeddings.weight = self.src_embeddings.token_embeddings.weight
+        if self.target_token_embeddings.weight.shape == self.src_token_embeddings.weight.shape:
+            self.target_token_embeddings.weight = self.src_token_embeddings.weight
 
     def _init_module_weights_fn(self, module, std: float = 0.02):
         """Following the same initialization as in BERT."""
@@ -327,10 +336,19 @@ class Transformer(TransformerBase):
         input_ids: Tensor,
         decoder_input_ids: Tensor,
         attn_mask: Tensor | None = None,
-        decoder_attn_mask: Tensor | None = None) -> Tensor:
+        decoder_attn_mask: Tensor | None = None
+    ) -> Tensor:
         encoder_input = self.src_embeddings(input_ids)
+        if attn_mask is None:
+            attn_mask = input_ids != self.config.src_pad_token_id
+        if attn_mask.dim() == 2:
+            attn_mask = utils.create_encoder_4d_attn_mask(input_ids, attn_mask)
         encoder_output = self.encoder(encoder_input, attn_mask=attn_mask)
 
+        if decoder_attn_mask is None:
+            decoder_attn_mask = decoder_input_ids != self.config.target_pad_token_id
+        if decoder_attn_mask.dim() == 2:
+            decoder_attn_mask = utils.create_decoder_4d_attn_causal_mask(decoder_input_ids, decoder_attn_mask)
         decoder_input = self.target_embeddings(decoder_input_ids)
         decoder_output = self.decoder(
             decoder_input,
@@ -347,10 +365,8 @@ def scaled_dot_product_attention(
     attn_mask: Tensor | None = None,
     attn_dropout: float | nn.Dropout | None = None,
 ) -> Tensor:
-    if attn_mask is not None:
-        assert attn_mask.dim() == 2 or attn_mask.dim() == 4
-        if attn_mask.dim() == 2:
-            attn_mask = attn_mask.unsqueeze(1).unsqueeze(2)
+    if attn_mask is not None and attn_mask.dim() != 4:
+        raise ValueError(f'Expected attn_mask is a 4D tensor, got a tensor with shape: {attn_mask.size()}')
 
     d_k = query.size(-1)
     attention_probs = (query @ key.transpose(-2, -1)) / math.sqrt(d_k)
