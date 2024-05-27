@@ -7,7 +7,7 @@ import datasets
 import evaluate
 from tokenizers import Tokenizer
 
-from bart.constants import LOWER_ONE_EIGHTH_BLOCK
+from bart.constants import LOWER_ONE_EIGHTH_BLOCK, SpecialToken
 from bart.models import BartBase
 import bart.models.utils as model_utils
 
@@ -48,6 +48,7 @@ def compute_dataset_bleu(
     model.eval()
 
     sacrebleu = evaluate.load('sacrebleu')
+    ignored_tokens = [SpecialToken.SOS, SpecialToken.EOS, SpecialToken.PAD, SpecialToken.UNK]
 
     for item_idx, item in dataset_iterator:
         if item_idx >= total_steps:
@@ -91,8 +92,16 @@ def compute_dataset_bleu(
         # tokenizer.decode method will remove special tokens by default (e.g. <UNK>)
         # it should be, because keep <UNK> tokens will increase the BLEU score
         # but has no meaning. See Post, 2018
-        src_text = src_tokenizer.decode([src_tokenizer.token_to_id(token) for token in source_tokens])
-        target_text = target_tokenizer.decode([target_tokenizer.token_to_id(token) for token in target_tokens])
+        src_text = src_tokenizer.decode([
+            src_tokenizer.token_to_id(token)
+            for token in source_tokens
+            if token not in ignored_tokens
+        ], skip_special_tokens=False)
+        target_text = target_tokenizer.decode([
+            target_tokenizer.token_to_id(token)
+            for token in target_tokens
+            if token not in ignored_tokens
+        ], skip_special_tokens=False)
         pred_text = target_tokenizer.decode(pred_token_ids)
 
         src_text = src_text.replace('_', LOWER_ONE_EIGHTH_BLOCK)
