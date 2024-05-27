@@ -80,6 +80,8 @@ def greedy_search_decode(
     eos_token_id = target_tokenizer.token_to_id(SpecialToken.EOS)
 
     encoder_input_ids = encoder_input_ids.unsqueeze(0).to(device)
+    if encoder_attn_mask is not None:
+        encoder_attn_mask = encoder_attn_mask.unsqueeze(0).to(device)
     encoder_output = None
     causal_mask = create_causal_mask(max_seq_length).to(device).unsqueeze(0).unsqueeze(0)  # (1, 1, max_seq_length, max_seq_length)
 
@@ -152,6 +154,8 @@ def beam_search_decode(
     eos_token_id = target_tokenizer.token_to_id(SpecialToken.EOS)
 
     encoder_input_ids = encoder_input_ids.unsqueeze(0).to(device)
+    if encoder_attn_mask is not None:
+        encoder_attn_mask = encoder_attn_mask.unsqueeze(0).to(device)
     encoder_output = None
     causal_mask = create_causal_mask(max_seq_length).to(device).unsqueeze(0).unsqueeze(0)  # (1, 1, max_seq_length, max_seq_length)
 
