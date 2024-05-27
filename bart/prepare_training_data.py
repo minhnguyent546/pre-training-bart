@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import math
 import os
 import random
-from typing import TypeAlias, Literal
+from typing import Literal, TypeAlias
 
 import numpy as np
 import pandas as pd
@@ -23,9 +23,8 @@ import torch
 
 from tqdm import tqdm
 
-from constants import SpecialToken, WORD_PIECE_SUBWORD_PREFIX
-import opts
-import utils
+from bart import opts, utils
+from bart.constants import SpecialToken, WORD_PIECE_SUBWORD_PREFIX
 
 
 TokenType: TypeAlias = str

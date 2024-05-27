@@ -17,7 +17,7 @@ def train_opts(parser):
     _add_dataset_opts(parser)
     _add_model_opts(parser)
     _add_training_opts(parser)
-
+    _add_compute_valid_bleu_opts(parser)
 
 def _add_general_opts(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group('General options')
@@ -319,6 +319,37 @@ def _add_training_opts(parser: argparse.ArgumentParser) -> None:
         help='Maximum gradient norm for gradient clipping',
         type=float,
         default=1.0,
+    )
+
+def _add_compute_valid_bleu_opts(parser):
+    group = parser.add_argument_group('Computing validation BLEU')
+    group.add_argument(
+        '--beam-size',
+        help='Beam size for beam search',
+        type=int,
+        default=1,
+    )
+    group.add_argument(
+        '--beam-return-topk',
+        help='Number of top-k results to return',
+        type=int,
+        default=1,
+    )
+    group.add_argument(
+        '--log-sentences',
+        help='Whether to log sentences during evaluation',
+        action='store_true',
+    )
+    group.add_argument(
+        '--logging-interval',
+        help='Logging interval',
+        type=int,
+        default=500,
+    )
+    group.add_argument(
+        '--compute-bleu-max-steps',
+        help='Maximum steps to compute BLEU',
+        type=int,
     )
 
 def _add_train_tokenizer_opts(parser: argparse.ArgumentParser) -> None:

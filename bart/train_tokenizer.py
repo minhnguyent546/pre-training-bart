@@ -14,9 +14,8 @@ import tokenizers.models
 import tokenizers.pre_tokenizers
 import tokenizers.trainers
 
-from constants import SpecialToken
-import opts
-import utils
+from bart import opts, utils
+from bart.constants import SpecialToken
 
 
 def train_tokenizer(

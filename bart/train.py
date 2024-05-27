@@ -17,15 +17,15 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from constants import SpecialToken
-from models import (
+from bart import opts, utils
+from bart.compute_bleu import compute_dataset_bleu
+from bart.constants import SpecialToken
+from bart.models import (
     BartBase,
     BartConfig,
     BartForGeneration,
     LayerNormalization,
 )
-import opts
-import utils
 
 
 def train_model(args: argparse.Namespace):
@@ -36,7 +36,7 @@ def train_model(args: argparse.Namespace):
     target_tokenizer = src_tokenizer
 
     # create data loaders
-    saved_dataset = load_saved_dataset(args.data_file_format, args.data_file, args.test_size)
+    saved_dataset = load_dataset_from_processed_file(args.data_file_format, args.data_file, args.test_size)
     saved_dataset = saved_dataset.with_format('torch')
     train_data_loader = DataLoader(
         saved_dataset['train'],
@@ -155,8 +155,13 @@ def train_model(args: argparse.Namespace):
             optimizer.zero_grad()
 
             with autocast_context:
-                logits, loss = model(input_ids, input_mask=input_mask, labels=labels)
+                outputs = model(
+                    encoder_input_ids=input_ids,
+                    encoder_attn_mask=input_mask,
+                    labels=labels,
+                )
 
+            loss = outputs.lm_loss
             scaler.scale(loss).backward()
 
             if args.max_grad_norm > 0:
@@ -178,11 +183,24 @@ def train_model(args: argparse.Namespace):
             writer.flush()
 
             if (global_step + 1) % valid_interval == 0:
+                valid_bleu = compute_dataset_bleu(
+                    model,
+                    test_data_loader.dataset,
+                    src_tokenizer,
+                    target_tokenizer,
+                    args.target_seq_length,
+                    args.beam_size,
+                    args.beam_return_topk,
+                    args.log_sentences,
+                    args.logging_interval,
+                    args.compute_bleu_max_steps,
+                )
                 valid_results = eval_model(model, test_data_loader, device)
-                writer.add_scalars('loss/', {
+                writer.add_scalars('loss', {
                     'train': accum_train_loss / valid_interval,
                     'valid': valid_results['loss'],
                 }, global_step + 1)
+                writer.add_scalar('valid_bleu', valid_bleu, global_step + 1)
                 writer.flush()
                 accum_train_loss = 0.0
 
@@ -219,7 +237,12 @@ def eval_model(
             input_mask = batch['input_mask'].to(device).type(torch.int32)
             labels = batch['labels'].to(device).type(torch.int64)
 
-            logits, loss = model(input_ids, input_mask=input_mask, labels=labels)
+            outputs = model(
+                encoder_input_ids=input_ids,
+                encoder_attn_mask=input_mask,
+                labels=labels,
+            )
+            loss = outputs.loss
             accum_valid_loss += loss.item()
 
             batch_iter.set_postfix({'loss': f'{loss.item():0.3f}'})
@@ -231,7 +254,7 @@ def eval_model(
         'loss': accum_valid_loss / num_iterations,
     }
 
-def load_saved_dataset(data_file_format: str, data_files, test_size: int) -> datasets.DatasetDict:
+def load_dataset_from_processed_file(data_file_format: str, data_files, test_size: int) -> datasets.DatasetDict:
     raw_dataset: datasets.DatasetDict = datasets.load_dataset(data_file_format, data_files=data_files)
     dataset = raw_dataset['train'].train_test_split(test_size=test_size, shuffle=True)
     return dataset

@@ -3,7 +3,6 @@ A standard transformer model as in Vaswani et al. (2017).
 """
 
 from dataclasses import dataclass
-from typing import Literal
 import math
 
 from torch import Tensor
@@ -11,7 +10,7 @@ from torch import nn
 import torch
 from torch.nn import functional as F
 
-from . import utils
+import bart.models.utils as model_utils
 
 
 @dataclass
@@ -25,7 +24,7 @@ class TransformerConfig:
     src_seq_length: int = 128
     target_seq_length: int = 128
     max_position_embeddings: int = 512  # just in case we need to train with larger sequence length at some point
-    device: torch.device | Literal['auto'] = 'auto'
+    device: torch.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     shared_vocab: bool = True
     tie_weights: bool = True  # whether to use tied weights between token embeddings and the pre-softmax linear layer
     hidden_size: int = 512
@@ -35,6 +34,12 @@ class TransformerConfig:
     dropout: float = 0.1
     attn_dropout: float = 0.1
     activation: str = 'relu'
+
+
+@dataclass
+class TransformerOutput:
+    encoder_output: Tensor
+    decoder_output: Tensor | None = None
 
 class LayerNormalization(nn.Module):
     def __init__(self, features: int, eps: float = 1e-7):
@@ -89,7 +94,7 @@ class FeedForward(nn.Module):
         super().__init__()
         self.dense = nn.Linear(hidden_size, intermediate_size)
         self.proj = nn.Linear(intermediate_size, hidden_size)
-        self.activation_fn = utils.get_activation(activation)
+        self.activation_fn = model_utils.get_activation(activation)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: Tensor) -> Tensor:
@@ -287,6 +292,7 @@ class Transformer(TransformerBase):
     def __init__(self, config: TransformerConfig):
         super().__init__()
         self.config = config
+        self.device = config.device
         self.src_embeddings = TransformerEmbeddings(
             config.src_vocab_size,
             config.hidden_size,
@@ -333,30 +339,40 @@ class Transformer(TransformerBase):
 
     def forward(
         self,
-        input_ids: Tensor,
-        decoder_input_ids: Tensor,
-        attn_mask: Tensor | None = None,
-        decoder_attn_mask: Tensor | None = None
-    ) -> Tensor:
-        encoder_input = self.src_embeddings(input_ids)
-        if attn_mask is None:
-            attn_mask = input_ids != self.config.src_pad_token_id
-        if attn_mask.dim() == 2:
-            attn_mask = utils.create_encoder_4d_attn_mask(input_ids, attn_mask)
-        encoder_output = self.encoder(encoder_input, attn_mask=attn_mask)
+        encoder_input_ids: Tensor | None = None,
+        decoder_input_ids: Tensor | None = None,
+        encoder_attn_mask: Tensor | None = None,
+        decoder_attn_mask: Tensor | None = None,
+        encoder_output: Tensor | None = None,
+    ) -> TransformerOutput:
+        if encoder_output is None:
+            if encoder_input_ids is None:
+                raise ValueError('If `encoder_output` is not passed, `encoder_input_ids` can not be `None`')
+            encoder_input = self.src_embeddings(encoder_input_ids)
+            if encoder_attn_mask is None:
+                encoder_attn_mask = encoder_input_ids != self.config.src_pad_token_id
+            if encoder_attn_mask.dim() == 2:
+                encoder_attn_mask = model_utils.create_encoder_4d_attn_mask(encoder_input_ids, encoder_attn_mask)
+            encoder_output = self.encoder(encoder_input, attn_mask=encoder_attn_mask)
 
-        if decoder_attn_mask is None:
-            decoder_attn_mask = decoder_input_ids != self.config.target_pad_token_id
-        if decoder_attn_mask.dim() == 2:
-            decoder_attn_mask = utils.create_decoder_4d_attn_causal_mask(decoder_input_ids, decoder_attn_mask)
-        decoder_input = self.target_embeddings(decoder_input_ids)
-        decoder_output = self.decoder(
-            decoder_input,
-            encoder_output,
-            attn_mask=decoder_attn_mask,
-            encoder_attn_mask=attn_mask,
+        assert encoder_output is not None
+        decoder_output = None
+        if decoder_input_ids is not None:
+            if decoder_attn_mask is None:
+                decoder_attn_mask = decoder_input_ids != self.config.target_pad_token_id
+            if decoder_attn_mask.dim() == 2:
+                decoder_attn_mask = model_utils.create_decoder_4d_attn_causal_mask(decoder_input_ids, decoder_attn_mask)
+            decoder_input = self.target_embeddings(decoder_input_ids)
+            decoder_output = self.decoder(
+                decoder_input,
+                encoder_output=encoder_output,
+                attn_mask=decoder_attn_mask,
+                encoder_attn_mask=encoder_attn_mask,
+            )
+        return TransformerOutput(
+            encoder_output=encoder_output,
+            decoder_output=decoder_output,
         )
-        return decoder_output
 
 def scaled_dot_product_attention(
     query: Tensor,
