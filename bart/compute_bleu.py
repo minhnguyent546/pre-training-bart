@@ -54,10 +54,39 @@ def compute_dataset_bleu(
         if item_idx >= total_steps:
             break
 
+        # input_ids has form of: <s> ... </s> [PAD] [PAD]...
+        # labels has form of   : ... </s> [PAD] [PAD]...
         input_ids = Tensor(item['input_ids']).type(torch.int32)
         input_mask = Tensor(item['input_mask']).type(torch.int32)
-        source_tokens = item['source_tokens']
-        target_tokens = item['target_tokens']
+        labels = item['labels']
+
+        if 'source_tokens' in item:
+            source_tokens = item['source_tokens']
+            source_token_ids = [
+                src_tokenizer.token_to_id(token)
+                for token in source_tokens
+                if token not in ignored_tokens
+            ]
+        else:
+            source_token_ids = [
+                token_id for token_id in input_ids
+                if src_tokenizer.id_to_token(token_id) not in ignored_tokens
+            ]
+        if 'target_tokens' in item:
+            target_tokens = item['target_tokens']
+            target_token_ids = [
+                target_tokenizer.token_to_id(token)
+                for token in target_tokens
+                if token not in ignored_tokens
+            ]
+        else:
+            target_token_ids = [
+                token_id for token_id in labels
+                if target_tokenizer.id_to_token(token_id) not in ignored_tokens
+            ]
+
+        source_text = src_tokenizer.decode(source_token_ids, skip_special_tokens=False)
+        target_text = target_tokenizer.decode(target_token_ids, skip_special_tokens=False)
 
         if beam_size is not None and beam_size > 1:
             # decoding with beam search
@@ -92,19 +121,9 @@ def compute_dataset_bleu(
         # tokenizer.decode method will remove special tokens by default (e.g. <UNK>)
         # it should be, because keep <UNK> tokens will increase the BLEU score
         # but has no meaning. See Post, 2018
-        src_text = src_tokenizer.decode([
-            src_tokenizer.token_to_id(token)
-            for token in source_tokens
-            if token not in ignored_tokens
-        ], skip_special_tokens=False)
-        target_text = target_tokenizer.decode([
-            target_tokenizer.token_to_id(token)
-            for token in target_tokens
-            if token not in ignored_tokens
-        ], skip_special_tokens=False)
         pred_text = target_tokenizer.decode(pred_token_ids)
 
-        src_text = src_text.replace('_', LOWER_ONE_EIGHTH_BLOCK)
+        source_text = source_text.replace('_', LOWER_ONE_EIGHTH_BLOCK)
         target_text = target_text.replace('_', LOWER_ONE_EIGHTH_BLOCK)
         pred_text = pred_text.replace('_', LOWER_ONE_EIGHTH_BLOCK)
 
@@ -114,7 +133,7 @@ def compute_dataset_bleu(
         if log_sentences and item_idx % logging_interval == 0:
             bleu_score = sacrebleu.compute(predictions=[pred_text], references=[target_text])
 
-            dataset_iterator.write(f'Source: {src_text}')
+            dataset_iterator.write(f'Source: {source_text}')
             dataset_iterator.write(f'Target: {target_text}')
             if cand_text_list is not None:
                 for cand_text_idx, cand_text in enumerate(cand_text_list):
