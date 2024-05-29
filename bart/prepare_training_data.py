@@ -8,7 +8,6 @@ import argparse
 from dataclasses import dataclass
 import math
 import os
-import random
 from typing import Literal, TypeAlias
 
 import numpy as np
@@ -35,23 +34,9 @@ class TrainingInstance:
     source: TokenList
     target: TokenList
 
-def create_training_instances(
-    data_files: list[str],
-    tokenizer: Tokenizer,
-    src_seq_length: int,
-    target_seq_length: int,
-    num_rounds: int,
-    masking_ratio: float,
-    deletion_ratio: float,
-    infilling_ratio: float,
-    permutation_ratio: float,
-    rotation_ratio: float,
-    span_lengths_lambda: float,
-    short_seq_prob: float,
-    whole_word_masking: bool,
-) -> list[TrainingInstance]:
+def create_training_instances(tokenizer: Tokenizer, args: argparse.Namespace) -> None:
     documents: list[TokenList] = [[]]
-    for data_file in data_files:
+    for data_file in args.data_file:
         with open(data_file, 'r', encoding='utf-8') as f:
             for line in tqdm(f, desc=f'Reading data from {data_file}', unit='lines'):
                 line = utils.clean_line(line)
@@ -65,29 +50,39 @@ def create_training_instances(
 
     # remove empty documents
     documents = [doc for doc in documents if doc]
-    training_instances = []
 
     # create mask span distribution using poisson distribution
-    mask_span_distribution = create_poisson_distribution(span_lengths_lambda, src_seq_length)
+    mask_span_distribution = create_poisson_distribution(args.span_lengths_lambda, args.src_seq_length)
 
-    for round_idx in range(num_rounds):
-        docs_iter = tqdm(range(len(documents)), desc=f'Creating training instances {round_idx + 1}-th iteration')
+    output_file, ext = os.path.splitext(args.output_file)
+    for round_idx in range(args.num_rounds):
+        docs_iter = tqdm(range(len(documents)), desc=f'Working on {round_idx + 1}-th round')
+        training_instances = []
         for doc_idx in docs_iter:
             training_instances.extend(create_training_instances_from_doc(
                 documents,
                 doc_idx,
-                src_seq_length,
+                args.src_seq_length,
                 tokenizer,
-                masking_ratio,
-                deletion_ratio,
-                infilling_ratio,
-                permutation_ratio,
-                rotation_ratio,
+                args.masking_ratio,
+                args.deletion_ratio,
+                args.infilling_ratio,
+                args.permutation_ratio,
+                args.rotation_ratio,
                 mask_span_distribution,
-                short_seq_prob,
-                whole_word_masking,
+                args.short_seq_prob,
+                args.whole_word_masking,
             ))
-    return training_instances
+        write_training_instances_to_file(
+            f'{output_file}-{round_idx + 1}{ext}',
+            args.format,
+            training_instances,
+            tokenizer,
+            args.src_seq_length,
+            args.target_seq_length,
+            args.save_tokens,
+        )
+        del training_instances
 
 def create_training_instances_from_doc(
     documents: list[TokenList],
@@ -109,7 +104,7 @@ def create_training_instances_from_doc(
     # 10% of the time, we will use shorter sequences to minimize mismatch between
     # pre-training and fine-tuning
     if np.random.random() < short_seq_prob:
-        max_num_tokens = random.randint(2, max_num_tokens)
+        max_num_tokens = np.random.randint(2, max_num_tokens + 1)
 
     training_instances: list[TrainingInstance] = []
 
@@ -357,31 +352,7 @@ def main():
     checkpoints_dir = utils.ensure_dir(args.checkpoints_dir)
     tokenizer_save_path = os.path.join(checkpoints_dir, args.tokenizer_basename)
     tokenizer = Tokenizer.from_file(tokenizer_save_path)
-    training_instances = create_training_instances(
-        args.data_file,
-        tokenizer,
-        args.src_seq_length,
-        args.target_seq_length,
-        args.num_rounds,
-        args.masking_ratio,
-        args.deletion_ratio,
-        args.infilling_ratio,
-        args.permutation_ratio,
-        args.rotation_ratio,
-        args.span_lengths_lambda,
-        args.short_seq_prob,
-        args.whole_word_masking,
-    )
-    write_training_instances_to_file(
-        args.output_file,
-        args.format,
-        training_instances,
-        tokenizer,
-        args.src_seq_length,
-        args.target_seq_length,
-        args.save_tokens,
-    )
-
+    training_instances = create_training_instances(tokenizer, args)
 
 if __name__ == '__main__':
     main()
