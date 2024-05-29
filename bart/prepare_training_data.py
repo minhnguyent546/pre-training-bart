@@ -50,7 +50,7 @@ def create_training_instances(
     short_seq_prob: float,
     whole_word_masking: bool,
 ) -> list[TrainingInstance]:
-    documents: list[list[TokenList]] = [[]]
+    documents: list[TokenList] = [[]]
     for data_file in data_files:
         with open(data_file, 'r', encoding='utf-8') as f:
             for line in tqdm(f, desc=f'Reading data from {data_file}', unit='lines'):
@@ -61,7 +61,7 @@ def create_training_instances(
                 tokens = tokenizer.encode(line)
                 if not tokens.tokens:  # a string contains only spaces will be encoded to an empty list!
                     continue
-                documents[-1].append(tokens.tokens)
+                documents[-1].extend(tokens.tokens)
 
     # remove empty documents
     documents = [doc for doc in documents if doc]
@@ -90,7 +90,7 @@ def create_training_instances(
     return training_instances
 
 def create_training_instances_from_doc(
-    documents: list[list[TokenList]],
+    documents: list[TokenList],
     doc_idx: int,
     src_seq_length: int,
     tokenizer: Tokenizer,
@@ -113,15 +113,12 @@ def create_training_instances_from_doc(
 
     training_instances: list[TrainingInstance] = []
 
-    flat_doc: TokenList = []
-    for segment in doc:
-        flat_doc.extend(segment)
-    doc_size = len(flat_doc)
+    doc_size = len(doc)
     for idx in range(0, doc_size, max_num_tokens):
-        source = [SpecialToken.SOS] + flat_doc[idx:idx+max_num_tokens] + [SpecialToken.EOS]
+        source = [SpecialToken.SOS] + doc[idx:idx+max_num_tokens] + [SpecialToken.EOS]
         target = source[1:-1] + [SpecialToken.EOS]
         if masking_ratio > 0.0:
-            source = add_mask_with_span(
+            source = add_span_mask(
                 source,
                 masking_ratio,
                 tokenizer,
@@ -131,7 +128,7 @@ def create_training_instances_from_doc(
         if deletion_ratio > 0.0:
             source = add_deletion_noise(source, deletion_ratio)
         if infilling_ratio > 0.0:
-            source = add_mask_with_span(
+            source = add_span_mask(
                 source,
                 infilling_ratio,
                 tokenizer,
@@ -195,7 +192,7 @@ def write_training_instances_to_file(
 
     print(f'Wrote {len(content)} training instances to {output_file}')
 
-def add_mask_with_span(
+def add_span_mask(
     tokens: TokenList,
     mask_ratio: float,
     tokenizer: Tokenizer,
@@ -203,8 +200,11 @@ def add_mask_with_span(
     mask_span_distribution: torch.distributions.Categorical | None = None,
 ) -> TokenList:
     """
-    If `mask_span_distribution` is not provided, it is equal to token masking,
-    otherwise it is text infilling.
+    This function will replace span of text with a single MASK token or a random token.
+
+    Span of subwords are treat as a single token if `whole_word_masking` is set to True.
+
+    In case `mask_span_distribution` is not passed, span lengths can be considered as a list of ones.
     """
     cand_indices: list[list[int]] = []
     for idx, token in enumerate(tokens):
@@ -215,72 +215,51 @@ def add_mask_with_span(
         else:
             cand_indices.append([idx])
 
-    num_to_infill = int(round(len(cand_indices) * mask_ratio))
-
-    if mask_span_distribution is not None:
-        lengths = np.array([])
-        while lengths.size < num_to_infill:
-            aux_lengths = mask_span_distribution.sample((num_to_infill,)).numpy()
-            lengths = np.concatenate((lengths, aux_lengths)).astype(int)
-
-        # cutting down to `num_to_infill`
-        i = 0
-        cum_length = 0
-        while i < lengths.size and cum_length <= num_to_infill:
-            assert i < lengths.size
-            cum_length += lengths[i]
-            i += 1
-        if cum_length > num_to_infill:
-            cum_length -= lengths[i - 1]
-            i -= 1
-        assert cum_length <= num_to_infill
-        lengths = lengths[:i]
-        num_to_infill = cum_length
-        lengths = np.array(lengths)
-    else:
-        lengths = np.ones(num_to_infill, dtype=int)
-
-    # handle insertion (i.e. length = 0) separately
-    num_to_insert = lengths[lengths == 0].size
-    lengths = lengths[lengths > 0]
-
-    # now, let's mask the contiguous spans
-    result_tokens: TokenList = tokens[:]
-    lptr, rptr = 0, -1
     cand_sz = len(cand_indices)
-    consumed_length = 0
+    num_to_mask = int(cand_sz * mask_ratio)
+    result_tokens = tokens[:]
+    insert_count = 0
+    if mask_span_distribution is not None:
+        # span masking
+        mask_indices = set()
+        spans: list[list[int]] = []  # list of (start, end)
+        while len(mask_indices) + insert_count < num_to_mask:
+            span_len = mask_span_distribution.sample().item()
+            if span_len == 0:
+                insert_count += 1
+                continue
 
-    for length in lengths:
-        assert lptr < cand_sz
-        consumed_length += length
+            start_index = np.random.choice(cand_sz)
+            if start_index in mask_indices:
+                continue
 
-        # expand rptr to the right as far as we can
-        while rptr + 1 < cand_sz and cand_sz - rptr - 2 >= num_to_infill - consumed_length:
-            rptr += 1
+            spans.append([start_index, start_index])
+            for i in range(span_len):
+                if len(mask_indices) >= num_to_mask or start_index + i >= cand_sz:
+                    break
+                mask_indices.add(start_index + i)
+                spans[-1][-1] = start_index + i
 
-        # weighted random
-        start_cand_idx = utils.wnext(lptr, rptr - length, time=-np.random.randint(8, 16))
+        spans = merge_interval(spans)
+    else:
+        random_indices = np.random.permutation(cand_sz)[:num_to_mask]
+        spans = [[i, i] for i in random_indices]
+    # each span is replaced with a single [MASK] token (80%) or a random token (20%)
+    for start, end in spans:
+        for i in range(start, end + 1):
+            for j in cand_indices[i]:
+                result_tokens[j] = SpecialToken.PLACEHOLDER
 
-        # all tokens from [start_cand_idx, start_cand_idx + length - 1] will be masked
-        for j in range(length):
-            for idx in cand_indices[start_cand_idx + j]:
-                result_tokens[idx] = SpecialToken.PLACEHOLDER
-
-        # we will use Bert's mask strategy 80/0/20 here
-        # (corresponding to replace with mask/keep/random)
-        new_token = None
         if np.random.random() < 0.8:
-            new_token = SpecialToken.MASK
+            result_tokens[cand_indices[start][0]] = SpecialToken.MASK
         else:
-            new_token = tokenizer.id_to_token(np.random.randint(0, tokenizer.get_vocab_size()))
-
-        result_tokens[cand_indices[start_cand_idx][0]] = new_token
-        lptr = start_cand_idx + length
-
+            result_tokens[cand_indices[start][0]] = tokenizer.id_to_token(
+                np.random.randint(0, tokenizer.get_vocab_size()),
+            )
     result_tokens = [token for token in result_tokens if token != SpecialToken.PLACEHOLDER]
-    if num_to_insert > 0:
-        result_tokens = add_insertion_noise(result_tokens, num_to_insert / len(tokens), tokenizer)
 
+    if insert_count > 0:
+        result_tokens = add_insertion_noise(result_tokens, insert_count / len(result_tokens), tokenizer)
     return result_tokens
 
 def add_deletion_noise(tokens: TokenList, deletion_ratio: float) -> TokenList:
@@ -347,6 +326,17 @@ def create_poisson_distribution(
 
     distribution = torch.distributions.Categorical(Tensor(probs).float())
     return distribution
+
+def merge_interval(intervals: list[list[int]]) -> list[list[int]]:
+    intervals = sorted(intervals, key=lambda x: x[0])
+    merged: list[list[int]] = []
+    for interval in intervals:
+        if not merged or merged[-1][1] < interval[0]:
+            merged.append(interval)
+        else:
+            merged[-1][1] = max(merged[-1][1], interval[1])
+
+    return merged
 
 def main():
     parser = argparse.ArgumentParser(
