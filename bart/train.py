@@ -145,7 +145,7 @@ def train_model(args: argparse.Namespace):
         position=0,
     )
     global_step = initial_global_step
-    total_loss = 0.0
+    batch_loss = 0.0
     while global_step < train_steps:
         torch.cuda.empty_cache()
 
@@ -164,7 +164,7 @@ def train_model(args: argparse.Namespace):
                 loss = outputs.lm_loss
                 if args.accum_step > 1:
                     loss = loss / args.accum_step
-                total_loss += loss.item()
+                batch_loss += loss.item()
 
             # useful link about gradient accumulation:
             # https://discuss.pytorch.org/t/why-do-we-need-to-set-the-gradients-manually-to-zero-in-pytorch/4903/20
@@ -174,8 +174,6 @@ def train_model(args: argparse.Namespace):
             scaler.scale(loss).backward()
 
             if (batch_idx + 1) % args.accum_step == 0 or batch_idx + 1 == len(train_data_loader):
-                mean_loss = total_loss / args.accum_step
-                total_loss = 0
                 if args.max_grad_norm > 0:
                     scaler.unscale_(optimizer)
                     nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.max_grad_norm)
@@ -188,10 +186,10 @@ def train_model(args: argparse.Namespace):
 
                 lr_scheduler.step()
 
-                train_progress_bar.set_postfix({'loss': f'{mean_loss:0.3f}'})
-                accum_train_loss += mean_loss
+                train_progress_bar.set_postfix({'loss': f'{batch_loss:0.3f}'})
+                accum_train_loss += batch_loss
 
-                writer.add_scalar('loss/batch_loss', mean_loss, global_step)
+                writer.add_scalar('loss/batch_loss', batch_loss, global_step)
                 writer.flush()
 
                 if (global_step + 1) % valid_interval == 0:
@@ -223,6 +221,7 @@ def train_model(args: argparse.Namespace):
                     )
 
                 global_step += 1
+                batch_loss = 0.0
                 train_progress_bar.update()
                 if global_step >= train_steps:
                     break
