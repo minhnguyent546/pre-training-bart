@@ -292,6 +292,12 @@ def _add_training_opts(parser: argparse.ArgumentParser) -> None:
         default=32,
     )
     group.add_argument(
+        '--accum-step',
+        help='Gradient accumulation step',
+        type=int,
+        default=1,
+    )
+    group.add_argument(
         '--fp16',
         help='Whether to use mixed precision training with fp16',
         action='store_true',

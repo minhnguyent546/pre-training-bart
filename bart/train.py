@@ -105,7 +105,7 @@ def train_model(args: argparse.Namespace):
     )
     lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
-        lr_lambda=lambda step: learning_rate * utils.noam_decay(
+        lr_lambda=lambda step: learning_rate * args.accum_step * utils.noam_decay(
             step,
             args.hidden_size,
             args.warmup_steps
@@ -145,10 +145,11 @@ def train_model(args: argparse.Namespace):
         position=0,
     )
     global_step = initial_global_step
+    total_loss = 0.0
     while global_step < train_steps:
         torch.cuda.empty_cache()
 
-        for batch in train_data_loader:
+        for batch_idx, batch in enumerate(train_data_loader):
             input_ids = batch['input_ids'].to(device).type(torch.int32)
             input_mask = batch['input_mask'].to(device).type(torch.int32)
             labels = batch['labels'].to(device).type(torch.int64)
@@ -160,66 +161,71 @@ def train_model(args: argparse.Namespace):
                     encoder_attn_mask=input_mask,
                     labels=labels,
                 )
+                loss = outputs.lm_loss
+                if args.accum_step > 1:
+                    loss = loss / args.accum_step
+                total_loss += loss.item()
 
-            loss = outputs.lm_loss
+            # useful link about gradient accumulation:
+            # https://discuss.pytorch.org/t/why-do-we-need-to-set-the-gradients-manually-to-zero-in-pytorch/4903/20
+            # https://github.com/huggingface/transformers/blob/121c24efa4453e4e726b5f0b2cf7095b14b7e74e/src/transformers/trainer.py#L801
+
+            # accumulates scaled gradients
             scaler.scale(loss).backward()
 
-            if args.max_grad_norm > 0:
-                scaler.unscale_(optimizer)
-                nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.max_grad_norm)
+            if (batch_idx + 1) % args.accum_step == 0 or batch_idx + 1 == len(train_data_loader):
+                mean_loss = total_loss / args.accum_step
+                total_loss = 0
+                if args.max_grad_norm > 0:
+                    scaler.unscale_(optimizer)
+                    nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.max_grad_norm)
 
-            scaler.step(optimizer)
-            scaler.update()
+                scaler.step(optimizer)
+                scaler.update()
 
-            for group_id, group_lr in enumerate(lr_scheduler.get_last_lr()):
-                writer.add_scalar(f'learning_rate/group-{group_id}', group_lr, global_step)
+                for group_id, group_lr in enumerate(lr_scheduler.get_last_lr()):
+                    writer.add_scalar(f'learning_rate/group-{group_id}', group_lr, global_step)
 
-            lr_scheduler.step()
+                lr_scheduler.step()
 
-            train_progress_bar.set_postfix({'loss': f'{loss.item():0.3f}'})
-            accum_train_loss += loss.item()
+                train_progress_bar.set_postfix({'loss': f'{mean_loss:0.3f}'})
+                accum_train_loss += mean_loss
 
-            writer.add_scalar('loss/batch_loss', loss.item(), global_step)
-            writer.flush()
-
-            if (global_step + 1) % valid_interval == 0:
-                valid_results = eval_model(model, test_data_loader, device)
-                valid_bleu = compute_dataset_bleu(
-                    model,
-                    test_data_loader.dataset,
-                    src_tokenizer,
-                    target_tokenizer,
-                    args.target_seq_length,
-                    args.beam_size,
-                    args.beam_return_topk,
-                    args.log_sentences,
-                    args.logging_interval,
-                    args.compute_bleu_max_steps,
-                )
-                writer.add_scalars('loss', {
-                    'train': accum_train_loss / valid_interval,
-                    'valid': valid_results['loss'],
-                }, global_step + 1)
-                writer.add_scalar('valid_bleu', valid_bleu, global_step + 1)
+                writer.add_scalar('loss/batch_loss', mean_loss, global_step)
                 writer.flush()
-                accum_train_loss = 0.0
 
-            if (global_step + 1) % save_interval == 0:
-                checkpoint_dict = {
-                    'global_step': global_step + 1,
-                    'model': model.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'lr_scheduler': lr_scheduler.state_dict(),
-                    'config': bart_config,
-                    'accum_train_loss': accum_train_loss,
-                }
-                model_save_path = os.path.join(checkpoints_dir, f'bart-{global_step + 1}.pt')
-                torch.save(checkpoint_dict, model_save_path)
+                if (global_step + 1) % valid_interval == 0:
+                    valid_results = eval_model(model, test_data_loader, device)
+                    valid_bleu = compute_dataset_bleu(
+                        model,
+                        test_data_loader.dataset,
+                        src_tokenizer,
+                        target_tokenizer,
+                        args.target_seq_length,
+                        args.beam_size,
+                        args.beam_return_topk,
+                        args.log_sentences,
+                        args.logging_interval,
+                        args.compute_bleu_max_steps,
+                    )
+                    writer.add_scalars('loss', {
+                        'train': accum_train_loss / valid_interval,
+                        'valid': valid_results['loss'],
+                    }, global_step + 1)
+                    writer.add_scalar('valid_bleu', valid_bleu, global_step + 1)
+                    writer.flush()
+                    accum_train_loss = 0.0
 
-            global_step += 1
-            train_progress_bar.update()
-            if global_step >= train_steps:
-                break
+                if (global_step + 1) % save_interval == 0:
+                    save_checkpoint(
+                        global_step + 1, checkpoints_dir, model, optimizer,
+                        lr_scheduler, bart_config, accum_train_loss,
+                    )
+
+                global_step += 1
+                train_progress_bar.update()
+                if global_step >= train_steps:
+                    break
 
 def eval_model(
     model: BartBase,
@@ -258,6 +264,26 @@ def load_dataset_from_processed_file(data_file_format: str, data_files, test_siz
     raw_dataset: datasets.DatasetDict = datasets.load_dataset(data_file_format, data_files=data_files)
     dataset = raw_dataset['train'].train_test_split(test_size=test_size, shuffle=True)
     return dataset
+
+def save_checkpoint(
+    global_step: int,
+    checkpoints_dir: str,
+    model: BartBase,
+    optimizer: torch.optim.Optimizer,
+    lr_scheduler,
+    config,
+    accum_train_loss,
+) -> None:
+    checkpoint_dict = {
+        'global_step': global_step,
+        'model': model.state_dict(),
+        'optimizer': optimizer.state_dict(),
+        'lr_scheduler': lr_scheduler.state_dict(),
+        'config': config,
+        'accum_train_loss': accum_train_loss,
+    }
+    model_save_path = os.path.join(checkpoints_dir, f'bart-{global_step}.pt')
+    torch.save(checkpoint_dict, model_save_path)
 
 def main():
     parser = argparse.ArgumentParser(
