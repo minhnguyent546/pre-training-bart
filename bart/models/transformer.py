@@ -34,6 +34,7 @@ class TransformerConfig:
     dropout: float = 0.1
     attn_dropout: float = 0.1
     activation: str = 'relu'
+    pre_norm: bool = False  # whether to place LayerNorm before each sub-layer (also known as pre-norm)
 
 
 @dataclass
@@ -177,18 +178,36 @@ class TransformerEncoderLayer(nn.Module):
             config.activation,
             config.dropout,
         )
-        self.self_attention_norm = LayerNormalization(config.hidden_size)
-        self.ff_norm = LayerNormalization(config.hidden_size)
+        self.pre_norm = config.pre_norm
+        self.layer_norms = nn.ModuleList([
+            LayerNormalization(config.hidden_size)
+            for _ in range(2)
+        ])
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x: Tensor, attn_mask: Tensor | None = None) -> Tensor:
         residual = x
+        x = self._maybe_layer_norm(x, 0, is_before=True)
         x = self.self_attention(x, attn_mask=attn_mask)
-        x = self.self_attention_norm(residual + self.dropout(x))
+        x = residual + self.dropout(x)
+        x = self._maybe_layer_norm(x, 0)
 
         residual = x
+        x = self._maybe_layer_norm(x, 1, is_before=True)
         x = self.feed_forward(x)
-        x = self.ff_norm(residual + self.dropout(x))
+        x = residual + self.dropout(x)
+        x = self._maybe_layer_norm(x, 1)
+        return x
+
+    def _maybe_layer_norm(
+        self,
+        x: Tensor,
+        sub_layer_idx: int,
+        is_before: bool = False,
+    ) -> Tensor:
+        assert sub_layer_idx < len(self.layer_norms)
+        if not (is_before ^ self.pre_norm):  # is_before === pre_norm
+            x = self.layer_norms[sub_layer_idx](x)
         return x
 
 class TransformerDecoderLayer(nn.Module):
@@ -210,9 +229,11 @@ class TransformerDecoderLayer(nn.Module):
             config.activation,
             config.dropout,
         )
-        self.masked_self_attention_norm = LayerNormalization(config.hidden_size)
-        self.cross_attention_norm = LayerNormalization(config.hidden_size)
-        self.ff_norm = LayerNormalization(config.hidden_size)
+        self.pre_norm = config.pre_norm
+        self.layer_norms = nn.ModuleList([
+            LayerNormalization(config.hidden_size)
+            for _ in range(3)
+        ])
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(
@@ -223,16 +244,33 @@ class TransformerDecoderLayer(nn.Module):
         encoder_attn_mask: Tensor | None = None,
     ) -> Tensor:
         residual = x
+        x = self._maybe_layer_norm(x, 0, is_before=True)
         x = self.masked_self_attention(x, attn_mask=attn_mask)
-        x = self.masked_self_attention_norm(residual + self.dropout(x))
+        x = residual + self.dropout(x)
+        x = self._maybe_layer_norm(x, 0)
 
         residual = x
+        x = self._maybe_layer_norm(x, 1, is_before=True)
         x = self.cross_attention(x, kv_tensor=encoder_output, attn_mask=encoder_attn_mask)
-        x = self.cross_attention_norm(residual + self.dropout(x))
+        x = residual + self.dropout(x)
+        x = self._maybe_layer_norm(x, 1)
 
         residual = x
+        x = self._maybe_layer_norm(x, 2, is_before=True)
         x = self.feed_forward(x)
-        x = self.ff_norm(residual + self.dropout(x))
+        x = residual + self.dropout(x)
+        x = self._maybe_layer_norm(x, 2)
+        return x
+
+    def _maybe_layer_norm(
+        self,
+        x: Tensor,
+        sub_layer_idx: int,
+        is_before: bool = False,
+    ) -> Tensor:
+        assert sub_layer_idx < len(self.layer_norms)
+        if not (is_before ^ self.pre_norm):  # is_before === pre_norm
+            x = self.layer_norms[sub_layer_idx](x)
         return x
 
 class TransformerEncoder(nn.Module):
@@ -242,10 +280,15 @@ class TransformerEncoder(nn.Module):
             TransformerEncoderLayer(config)
             for _ in range(config.num_hidden_layers)
         ])
+        self.pre_norm = config.pre_norm
+        if self.pre_norm:
+            self.layer_norm = LayerNormalization(config.hidden_size)
 
     def forward(self, x: Tensor, attn_mask: Tensor | None = None) -> Tensor:
         for layer in self.layers:
             x = layer(x, attn_mask=attn_mask)
+        if self.pre_norm:
+            x = self.layer_norm(x)
         return x
 
 class TransformerDecoder(nn.Module):
@@ -255,6 +298,9 @@ class TransformerDecoder(nn.Module):
             TransformerDecoderLayer(config)
             for _ in range(config.num_hidden_layers)
         ])
+        self.pre_norm = config.pre_norm
+        if self.pre_norm:
+            self.layer_norm = LayerNormalization(config.hidden_size)
 
     def forward(
         self,
@@ -270,6 +316,8 @@ class TransformerDecoder(nn.Module):
                 attn_mask=attn_mask,
                 encoder_attn_mask=encoder_attn_mask,
             )
+        if self.pre_norm:
+            x = self.layer_norm(x)
         return x
 
 class TransformerBase(nn.Module):

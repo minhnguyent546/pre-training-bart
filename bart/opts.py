@@ -141,6 +141,11 @@ def _add_model_opts(parser: argparse.ArgumentParser) -> None:
         default='gelu',
     )
     group.add_argument(
+        '--pre-norm',
+        help='Whether to place LayerNorm before each sub-layer (also known as pre-norm)',
+        action='store_true',
+    )
+    group.add_argument(
         '--pooler-dropout',
         help='Dropout rate in pooler',
         type=float,
