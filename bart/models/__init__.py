@@ -3,6 +3,8 @@ from bart.models.bart import (
     BartBase,
     BartConfig,
     BartForGeneration,
+    BartForNMT,
+    BartForNMTConfig,
 )
 from bart.models.transformer import (
     InputEmbeddings,
@@ -16,10 +18,12 @@ from bart.models.transformer import (
 )
 
 __all__ = [
-    'BartConfig',
-    'BartBase',
     'Bart',
+    'BartBase',
+    'BartConfig',
     'BartForGeneration',
+    'BartForNMT',
+    'BartForNMTConfig',
     'InputEmbeddings',
     'LayerNormalization',
     'PositionEmbeddings',

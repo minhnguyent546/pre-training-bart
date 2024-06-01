@@ -38,6 +38,21 @@ def initialize_bert_params_fn(module, std: float = 0.02):
         if module.padding_idx is not None:
             nn.init.zeros_(module.weight.data[module.padding_idx])
 
+def freeze_parameters(model: nn.Module, exclude: list[str] | None = None) -> list[str]:
+    if exclude is None:
+        exclude = []
+    freezed_params: list[str] = []
+    for name, param in model.named_parameters():
+        if not any(name.startswith(e) for e in exclude):
+            param.requires_grad = False
+            freezed_params.append(name)
+    return freezed_params
+
+def unfreeze_parameters(model: nn.Module, freezed_params: list[str]) -> None:
+    for name, param in model.named_parameters():
+        if name in freezed_params:
+            param.requires_grad = True
+
 def create_encoder_4d_attn_mask(input_ids: Tensor, attn_mask: Tensor) -> Tensor:
     if attn_mask.shape != input_ids.shape:
         raise ValueError(

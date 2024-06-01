@@ -34,7 +34,7 @@ class TransformerConfig:
     intermediate_size: int = 2048
     dropout: float = 0.1
     attn_dropout: float = 0.1
-    activation: str = 'relu'
+    activation: str = 'gelu'
     pre_norm: bool = False  # whether to place LayerNorm before each sub-layer (also known as pre-norm)
 
 
@@ -168,25 +168,34 @@ class MultiHeadAttention(nn.Module):
         return y
 
 class TransformerEncoderLayer(nn.Module):
-    def __init__(self, config: TransformerConfig):
+    def __init__(
+        self,
+        hidden_size: int,
+        num_heads: int,
+        intermediate_size: int,
+        activation: str,
+        pre_norm: bool = False,
+        dropout: float = 0.1,
+        attn_dropout: float = 0.1,
+    ):
         super().__init__()
         self.self_attention = MultiHeadAttention(
-            config.hidden_size,
-            config.num_heads,
-            config.attn_dropout,
+            hidden_size,
+            num_heads,
+            attn_dropout,
         )
         self.feed_forward = FeedForward(
-            config.hidden_size,
-            config.intermediate_size,
-            config.activation,
-            config.dropout,
+            hidden_size,
+            intermediate_size,
+            activation,
+            dropout,
         )
-        self.pre_norm = config.pre_norm
+        self.pre_norm = pre_norm
         self.layer_norms = nn.ModuleList([
-            LayerNormalization(config.hidden_size)
+            LayerNormalization(hidden_size)
             for _ in range(2)
         ])
-        self.dropout = nn.Dropout(config.dropout)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: Tensor, attn_mask: Tensor | None = None) -> Tensor:
         residual = x
@@ -214,30 +223,39 @@ class TransformerEncoderLayer(nn.Module):
         return x
 
 class TransformerDecoderLayer(nn.Module):
-    def __init__(self, config: TransformerConfig):
+    def __init__(
+        self,
+        hidden_size: int,
+        num_heads: int,
+        intermediate_size: int,
+        activation: str,
+        pre_norm: bool = False,
+        dropout: float = 0.1,
+        attn_dropout: float = 0.1,
+    ):
         super().__init__()
         self.masked_self_attention = MultiHeadAttention(
-            config.hidden_size,
-            config.num_heads,
-            config.attn_dropout,
+            hidden_size,
+            num_heads,
+            attn_dropout,
         )
         self.cross_attention = MultiHeadAttention(
-            config.hidden_size,
-            config.num_heads,
-            config.attn_dropout,
+            hidden_size,
+            num_heads,
+            attn_dropout,
         )
         self.feed_forward = FeedForward(
-            config.hidden_size,
-            config.intermediate_size,
-            config.activation,
-            config.dropout,
+            hidden_size,
+            intermediate_size,
+            activation,
+            dropout,
         )
-        self.pre_norm = config.pre_norm
+        self.pre_norm = pre_norm
         self.layer_norms = nn.ModuleList([
-            LayerNormalization(config.hidden_size)
+            LayerNormalization(hidden_size)
             for _ in range(3)
         ])
-        self.dropout = nn.Dropout(config.dropout)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(
         self,
@@ -287,16 +305,27 @@ class TransformerEncoder(nn.Module):
         self.position_embeddings = PositionEmbeddings(config.hidden_size, config.max_position_embeddings)
         self.dropout = nn.Dropout(config.dropout)
         self.layers = nn.ModuleList([
-            TransformerEncoderLayer(config)
+            TransformerEncoderLayer(
+                config.hidden_size,
+                config.num_heads,
+                config.intermediate_size,
+                config.activation,
+                pre_norm=config.pre_norm,
+                dropout=config.dropout,
+                attn_dropout=config.attn_dropout,
+            )
             for _ in range(config.num_hidden_layers)
         ])
         self.pre_norm = config.pre_norm
         if self.pre_norm:
             self.layer_norm = LayerNormalization(config.hidden_size)
 
-    def forward(self, x: Tensor, attn_mask: Tensor | None = None) -> Tensor:
+    def forward(self, x: Tensor, attn_mask: Tensor | None = None, embed_tokens: bool = True) -> Tensor:
         # embed tokens and positions
-        x = self.token_embeddings(x) + self.position_embeddings(x)
+        if embed_tokens:
+            assert hasattr(self, 'token_embeddings')
+            x = self.token_embeddings(x)
+        x = x + self.position_embeddings(x)
         x = self.dropout(x)
 
         for layer in self.layers:
@@ -318,7 +347,15 @@ class TransformerDecoder(nn.Module):
         self.position_embeddings = PositionEmbeddings(config.hidden_size, config.max_position_embeddings)
         self.dropout = nn.Dropout(config.dropout)
         self.layers = nn.ModuleList([
-            TransformerDecoderLayer(config)
+            TransformerDecoderLayer(
+                config.hidden_size,
+                config.num_heads,
+                config.intermediate_size,
+                config.activation,
+                pre_norm=config.pre_norm,
+                dropout=config.dropout,
+                attn_dropout=config.attn_dropout,
+            )
             for _ in range(config.num_hidden_layers)
         ])
         self.pre_norm = config.pre_norm
