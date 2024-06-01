@@ -1,6 +1,13 @@
-from .bart import Bart, BartBase, BartConfig, BartForGeneration
-from .transformer import (
+from bart.models.bart import (
+    Bart,
+    BartBase,
+    BartConfig,
+    BartForGeneration,
+)
+from bart.models.transformer import (
+    InputEmbeddings,
     LayerNormalization,
+    PositionEmbeddings,
     Transformer,
     TransformerBase,
     TransformerConfig,
@@ -13,10 +20,12 @@ __all__ = [
     'BartBase',
     'Bart',
     'BartForGeneration',
+    'InputEmbeddings',
+    'LayerNormalization',
+    'PositionEmbeddings',
     'Transformer',
     'TransformerBase',
     'TransformerConfig',
     'TransformerDecoder',
     'TransformerEncoder',
-    'LayerNormalization',
 ]

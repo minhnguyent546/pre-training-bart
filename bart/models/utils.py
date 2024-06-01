@@ -27,6 +27,17 @@ def shift_tokens_right(tokens: Tensor, start_token_id: int) -> Tensor:
     shifted[:, 1:] = tokens[:, :-1].detach().clone()
     return shifted
 
+def initialize_bert_params_fn(module, std: float = 0.02):
+    """Following the same initialization as in BERT."""
+    if isinstance(module, nn.Linear):
+        nn.init.normal_(module.weight.data, mean=0.0, std=std)
+        if module.bias is not None:
+            nn.init.zeros_(module.bias.data)
+    elif isinstance(module, nn.Embedding):
+        nn.init.normal_(module.weight.data, mean=0.0, std=std)
+        if module.padding_idx is not None:
+            nn.init.zeros_(module.weight.data[module.padding_idx])
+
 def create_encoder_4d_attn_mask(input_ids: Tensor, attn_mask: Tensor) -> Tensor:
     if attn_mask.shape != input_ids.shape:
         raise ValueError(

@@ -11,6 +11,7 @@ import torch
 from torch.nn import functional as F
 
 import bart.models.utils as model_utils
+from bart.models.utils import initialize_bert_params_fn
 
 
 @dataclass
@@ -57,20 +58,24 @@ class LayerNormalization(nn.Module):
         y = self.weight * y + self.bias
         return y
 
-class TransformerEmbeddings(nn.Module):
-    """Token embeddings and position embeddings, and then layer norm and dropout."""
-    def __init__(
-        self,
-        vocab_size: int,
-        hidden_size: int,
-        max_postition_embeddings: int,
-        embeddings_dropout: float,
-    ):
+class InputEmbeddings(nn.Module):
+    def __init__(self, vocab_size: int, hidden_size: int, scale_factor: float = 1.0):
         super().__init__()
         self.token_embeddings = nn.Embedding(vocab_size, hidden_size)
+        self.scale_factor = scale_factor
+
+    @property
+    def weight(self) -> Tensor:
+        return self.token_embeddings.weight
+
+    def forward(self, x: Tensor) -> Tensor:
+        embeddings = self.token_embeddings(x) * self.scale_factor
+        return embeddings
+
+class PositionEmbeddings(nn.Module):
+    def __init__(self, hidden_size: int, max_postition_embeddings: int):
+        super().__init__()
         self.position_embeddings = nn.Embedding(max_postition_embeddings, hidden_size)
-        self.layer_norm = LayerNormalization(hidden_size)
-        self.dropout = nn.Dropout(embeddings_dropout)
         self.register_buffer(
             'position_ids',
             torch.arange(0, max_postition_embeddings),
@@ -79,9 +84,7 @@ class TransformerEmbeddings(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         batch_size, seq_length = x.shape[:2]
         position_ids = self.position_ids[:seq_length]
-        embeddings = self.token_embeddings(x) + self.position_embeddings(position_ids)
-        embeddings = self.layer_norm(embeddings)
-        embeddings = self.dropout(embeddings)
+        embeddings = self.position_embeddings(position_ids)
         return embeddings
 
 class FeedForward(nn.Module):
@@ -276,6 +279,13 @@ class TransformerDecoderLayer(nn.Module):
 class TransformerEncoder(nn.Module):
     def __init__(self, config: TransformerConfig):
         super().__init__()
+        self.token_embeddings = InputEmbeddings(
+            config.src_vocab_size,
+            config.hidden_size,
+            scale_factor=math.sqrt(config.hidden_size),
+        )
+        self.position_embeddings = PositionEmbeddings(config.hidden_size, config.max_position_embeddings)
+        self.dropout = nn.Dropout(config.dropout)
         self.layers = nn.ModuleList([
             TransformerEncoderLayer(config)
             for _ in range(config.num_hidden_layers)
@@ -285,6 +295,10 @@ class TransformerEncoder(nn.Module):
             self.layer_norm = LayerNormalization(config.hidden_size)
 
     def forward(self, x: Tensor, attn_mask: Tensor | None = None) -> Tensor:
+        # embed tokens and positions
+        x = self.token_embeddings(x) + self.position_embeddings(x)
+        x = self.dropout(x)
+
         for layer in self.layers:
             x = layer(x, attn_mask=attn_mask)
         if self.pre_norm:
@@ -294,6 +308,15 @@ class TransformerEncoder(nn.Module):
 class TransformerDecoder(nn.Module):
     def __init__(self, config: TransformerConfig):
         super().__init__()
+        if not config.shared_vocab and config.target_vocab_size is None:
+            raise ValueError('`target_vocab_size` must be provided if `shared_vocab` is `False`')
+        self.token_embeddings = InputEmbeddings(
+            config.target_vocab_size or config.src_vocab_size,
+            config.hidden_size,
+            scale_factor=math.sqrt(config.hidden_size),
+        )
+        self.position_embeddings = PositionEmbeddings(config.hidden_size, config.max_position_embeddings)
+        self.dropout = nn.Dropout(config.dropout)
         self.layers = nn.ModuleList([
             TransformerDecoderLayer(config)
             for _ in range(config.num_hidden_layers)
@@ -309,6 +332,10 @@ class TransformerDecoder(nn.Module):
         attn_mask: Tensor | None = None,
         encoder_attn_mask: Tensor | None = None,
     ) -> Tensor:
+        # embed tokens and positions
+        x = self.token_embeddings(x) + self.position_embeddings(x)
+        x = self.dropout(x)
+
         for layer in self.layers:
             x = layer(
                 x,
@@ -324,14 +351,11 @@ class TransformerBase(nn.Module):
     def _tie_weights(self):
         raise NotImplementedError()
 
-    def _init_module_weights_fn(self, module, std: float = 0.02):
+    def _init_model_weights(self, std: float = 0.02):
         raise NotImplementedError()
 
     def post_init(self) -> None:
         self._init_model_weights()
-
-    def _init_model_weights(self, std: float = 0.02):
-        self.apply(lambda module: self._init_module_weights_fn(module, std=std))
 
     def num_params(self) -> int:
         return sum(param.numel() for param in self.parameters() if param.requires_grad)
@@ -341,20 +365,6 @@ class Transformer(TransformerBase):
         super().__init__()
         self.config = config
         self.device = config.device
-        self.src_embeddings = TransformerEmbeddings(
-            config.src_vocab_size,
-            config.hidden_size,
-            config.max_position_embeddings,
-            config.dropout,
-        )
-        if not self.config.shared_vocab and config.target_vocab_size is None:
-            raise ValueError('`target_vocab_size` must be provided if `shared_vocab` is `False`')
-        self.target_embeddings = TransformerEmbeddings(
-            config.target_vocab_size or config.src_vocab_size,
-            config.hidden_size,
-            config.max_position_embeddings,
-            config.dropout,
-        )
         self.encoder = TransformerEncoder(config)
         self.decoder = TransformerDecoder(config)
 
@@ -362,28 +372,15 @@ class Transformer(TransformerBase):
             self._tie_weights()
         self.post_init()
 
-    @property
-    def src_token_embeddings(self):
-        return self.src_embeddings.token_embeddings
-
-    @property
-    def target_token_embeddings(self):
-        return self.target_embeddings.token_embeddings
-
     def _tie_weights(self) -> None:
-        if self.target_token_embeddings.weight.shape == self.src_token_embeddings.weight.shape:
-            self.target_token_embeddings.weight = self.src_token_embeddings.weight
+        if not self.config.shared_vocab:
+            raise RuntimeError('--tie-weight requires a joined vocabulary')
 
-    def _init_module_weights_fn(self, module, std: float = 0.02):
-        """Following the same initialization as in BERT."""
-        if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight.data, mean=0.0, std=std)
-            if module.bias is not None:
-                nn.init.zeros_(module.bias.data)
-        elif isinstance(module, nn.Embedding):
-            nn.init.normal_(module.weight.data, mean=0.0, std=std)
-            if module.padding_idx is not None:
-                nn.init.zeros_(module.weight.data[module.padding_idx])
+        assert self.encoder.token_embeddings.weight.shape == self.decoder.token_embeddings.weight.shape
+        self.encoder.token_embeddings = self.decoder.token_embeddings
+
+    def _init_model_weights(self, std: float = 0.02) -> None:
+        self.apply(lambda module: initialize_bert_params_fn(module, std=std))
 
     def forward(
         self,
@@ -396,12 +393,11 @@ class Transformer(TransformerBase):
         if encoder_output is None:
             if encoder_input_ids is None:
                 raise ValueError('If `encoder_output` is not passed, `encoder_input_ids` can not be `None`')
-            encoder_input = self.src_embeddings(encoder_input_ids)
             if encoder_attn_mask is None:
                 encoder_attn_mask = encoder_input_ids != self.config.src_pad_token_id
             if encoder_attn_mask.dim() == 2:
                 encoder_attn_mask = model_utils.create_encoder_4d_attn_mask(encoder_input_ids, encoder_attn_mask)
-            encoder_output = self.encoder(encoder_input, attn_mask=encoder_attn_mask)
+            encoder_output = self.encoder(encoder_input_ids, attn_mask=encoder_attn_mask)
 
         assert encoder_output is not None
         decoder_output = None
@@ -410,9 +406,8 @@ class Transformer(TransformerBase):
                 decoder_attn_mask = decoder_input_ids != self.config.target_pad_token_id
             if decoder_attn_mask.dim() == 2:
                 decoder_attn_mask = model_utils.create_decoder_4d_attn_causal_mask(decoder_input_ids, decoder_attn_mask)
-            decoder_input = self.target_embeddings(decoder_input_ids)
             decoder_output = self.decoder(
-                decoder_input,
+                decoder_input_ids,
                 encoder_output=encoder_output,
                 attn_mask=decoder_attn_mask,
                 encoder_attn_mask=encoder_attn_mask,

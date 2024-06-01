@@ -6,13 +6,14 @@ from torch import Tensor
 from torch import nn
 import torch.nn.functional as F
 
-import bart.models.utils as model_utils
 from bart.models.transformer import (
     Transformer,
     TransformerBase,
     TransformerConfig,
     TransformerOutput,
 )
+import bart.models.utils as model_utils
+from bart.models.utils import initialize_bert_params_fn
 
 
 @dataclass
@@ -101,18 +102,11 @@ class BartForGeneration(BartBase):
         self.post_init()
 
     def _tie_weights(self):
-        self.lm_head.weight = self.model.target_token_embeddings.weight
+        assert self.lm_head.weight.shape == self.model.decoder.token_embeddings.weight.shape
+        self.lm_head.weight = self.model.decoder.token_embeddings.weight
 
-    def _init_module_weights_fn(self, module, std: float = 0.02):
-        """Following the same initialization as in BERT."""
-        if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight.data, mean=0.0, std=std)
-            if module.bias is not None:
-                nn.init.zeros_(module.bias.data)
-        elif isinstance(module, nn.Embedding):
-            nn.init.normal_(module.weight.data, mean=0.0, std=std)
-            if module.padding_idx is not None:
-                nn.init.zeros_(module.weight.data[module.padding_idx])
+    def _init_model_weights(self, std: float = 0.02) -> None:
+        self.apply(lambda module: initialize_bert_params_fn(module, std=std))
 
     def forward(
         self,
