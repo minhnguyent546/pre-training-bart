@@ -60,8 +60,7 @@ def build_tokenizer(
                 data.append(line)
 
     tokenizer = train_tokenizer(
-        utils.chunks(data,
-        chunk_size=10_000),
+        utils.chunks(data, chunk_size=10_000),
         vocab_size=vocab_size,
         min_freq=min_freq,
     )

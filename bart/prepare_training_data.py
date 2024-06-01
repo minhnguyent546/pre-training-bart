@@ -117,6 +117,7 @@ def create_training_instances_from_doc(
                 source,
                 masking_ratio,
                 tokenizer,
+                max_num_tokens,
                 whole_word_masking,
                 mask_span_distribution=None,
             )
@@ -127,6 +128,7 @@ def create_training_instances_from_doc(
                 source,
                 infilling_ratio,
                 tokenizer,
+                max_num_tokens,
                 whole_word_masking,
                 mask_span_distribution=mask_span_distribution,
             )
@@ -191,6 +193,7 @@ def add_span_mask(
     tokens: TokenList,
     mask_ratio: float,
     tokenizer: Tokenizer,
+    max_num_tokens: int,
     whole_word_masking: bool,
     mask_span_distribution: torch.distributions.Categorical | None = None,
 ) -> TokenList:
@@ -254,11 +257,16 @@ def add_span_mask(
     result_tokens = [token for token in result_tokens if token != SpecialToken.PLACEHOLDER]
 
     if insert_count > 0:
-        result_tokens = add_insertion_noise(result_tokens, insert_count / len(result_tokens), tokenizer)
+        result_tokens = add_insertion_noise(
+            result_tokens,
+            insert_count / len(result_tokens),
+            max_num_tokens,
+            tokenizer,
+        )
     return result_tokens
 
 def add_deletion_noise(tokens: TokenList, deletion_ratio: float) -> TokenList:
-    num_deletions = int((len(tokens) - 2) * deletion_ratio)
+    num_deletions = int(round((len(tokens) - 2) * deletion_ratio))
     indices_to_delete = np.random.permutation(len(tokens) - 2)[:num_deletions]
     indices_to_delete += 1  # add an offset to skip SOS token
     delete_mask = np.zeros(len(tokens), dtype=bool)
@@ -270,10 +278,12 @@ def add_deletion_noise(tokens: TokenList, deletion_ratio: float) -> TokenList:
 def add_insertion_noise(
     tokens: TokenList,
     insertion_ratio: float,
+    max_num_tokens: int,
     tokenizer: Tokenizer,
 ) -> TokenList:
     sz = len(tokens)
-    num_to_insert = int((sz - 2) * insertion_ratio)
+    num_to_insert = int(round((sz - 2) * insertion_ratio))
+    num_to_insert = min(num_to_insert, max_num_tokens - sz + 2)
     insert_indices = np.random.permutation(sz - 2 + num_to_insert)[:num_to_insert] + 1  # add an offset to skip SOS token
     insert_mask = np.zeros(sz + num_to_insert, dtype=bool)
     insert_mask[insert_indices] = True
@@ -294,6 +304,8 @@ def add_insertion_noise(
 
     result_tokens[~insert_mask] = tokens
     assert (result_tokens != SpecialToken.PLACEHOLDER).all()
+    assert len(result_tokens) == sz + num_to_insert
+    assert len(result_tokens) - 2 <= max_num_tokens
     return result_tokens.tolist()
 
 def add_rolling_noise(tokens: TokenList) -> TokenList:
@@ -352,7 +364,8 @@ def main():
     checkpoints_dir = utils.ensure_dir(args.checkpoints_dir)
     tokenizer_save_path = os.path.join(checkpoints_dir, args.tokenizer_basename)
     tokenizer = Tokenizer.from_file(tokenizer_save_path)
-    training_instances = create_training_instances(tokenizer, args)
+    create_training_instances(tokenizer, args)
+
 
 if __name__ == '__main__':
     main()
