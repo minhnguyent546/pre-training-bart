@@ -377,3 +377,9 @@ def _add_train_tokenizer_opts(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=32_000,
     )
+    group.add_argument(
+        '--min-freq',
+        help='Minimum frequency of a token to be included in the vocabulary',
+        type=int,
+        default=3,
+    )

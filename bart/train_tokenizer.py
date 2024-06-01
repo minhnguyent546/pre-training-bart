@@ -44,7 +44,12 @@ def train_tokenizer(
     tokenizer.add_special_tokens([AddedToken("\n")])
     return tokenizer
 
-def build_tokenizer(data_files: str | list[str], vocab_size: int, save_path: str | None = None) -> Tokenizer:
+def build_tokenizer(
+    data_files: str | list[str],
+    vocab_size: int,
+    min_freq: int = 1,
+    save_path: str | None = None,
+) -> Tokenizer:
     if isinstance(data_files, str):
         data_files = [data_files]
     data = []
@@ -54,7 +59,12 @@ def build_tokenizer(data_files: str | list[str], vocab_size: int, save_path: str
                 line = utils.clean_line(line)
                 data.append(line)
 
-    tokenizer = train_tokenizer(utils.chunks(data, chunk_size=10_000), vocab_size=vocab_size)
+    tokenizer = train_tokenizer(
+        utils.chunks(data,
+        chunk_size=10_000),
+        vocab_size=vocab_size,
+        min_freq=min_freq,
+    )
     print(f'Vocab size: {tokenizer.get_vocab_size()}')
 
     if save_path is not None:
@@ -75,7 +85,12 @@ def main():
 
     checkpoints_dir = utils.ensure_dir(args.checkpoints_dir)
     tokenizer_save_path = os.path.join(checkpoints_dir, args.tokenizer_basename)
-    build_tokenizer(args.data_file, args.vocab_size, tokenizer_save_path)
+    build_tokenizer(
+        args.data_file,
+        args.vocab_size,
+        min_freq=args.min_freq,
+        save_path=tokenizer_save_path,
+    )
 
 
 if __name__ == '__main__':
