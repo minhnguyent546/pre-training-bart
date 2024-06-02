@@ -1,5 +1,5 @@
 """
-Pre-training BART with denoising objective.
+Fine-tuning BART for neural machine translation task.
 Requires: python >= 3.10
 """
 
@@ -13,11 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from bart import opts, utils
 from bart.constants import SpecialToken
-from bart.models import (
-    BartConfig,
-    BartForGeneration,
-    LayerNormalization,
-)
+from bart.models import BartForNMT, BartForNMTConfig, LayerNormalization
 from bart.trainer import Trainer, TrainingArguments
 
 
@@ -56,7 +52,7 @@ def train_model(args: argparse.Namespace):
     checkpoint_states = None
     if args.from_checkpoint is None:
         print('Starting training from scratch')
-        bart_config = BartConfig(
+        bart_config = BartForNMTConfig(
             src_pad_token_id=src_tokenizer.token_to_id(SpecialToken.PAD),
             target_pad_token_id=target_tokenizer.token_to_id(SpecialToken.PAD),
             target_start_token_id=target_tokenizer.token_to_id(SpecialToken.SOS),
@@ -79,6 +75,8 @@ def train_model(args: argparse.Namespace):
             pre_norm=args.pre_norm,
             pooler_dropout=args.pooler_dropout,
             pooler_activation=args.pooler_activation,
+            foreign_encoder_num_layers=args.foreign_encoder_num_layers,
+            foreign_encoder_num_heads=args.foreign_encoder_num_heads,
         )
     else:
         print(f'Loading states from checkpoint {args.from_checkpoint}')
@@ -93,7 +91,7 @@ def train_model(args: argparse.Namespace):
         bart_config = checkpoint_states['config']
 
     # model, optimizer, lr_scheduler, scaler
-    model = BartForGeneration(bart_config)
+    model = BartForNMT(bart_config)
     model.to(device)
     learning_rate = args.learning_rate
     optimizer = utils.make_optimizer(
@@ -124,6 +122,11 @@ def train_model(args: argparse.Namespace):
             initial_global_step = checkpoint_states['global_step']
         if 'accum_train_loss' in checkpoint_states:
             initial_accum_train_loss = checkpoint_states['accum_train_loss']
+
+    if args.freeze_params:
+        model.freeze_params()
+    else:
+        model.unfreeze_params()
 
     # tensorboard
     writer = SummaryWriter(args.expr_dir)
@@ -167,10 +170,10 @@ def train_model(args: argparse.Namespace):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Pre-training BART model with denoising objective',
+        description='Fine-tuning BART for neural machine translation',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    opts.pretrain_opts(parser)
+    opts.fine_tune_nmt_opts(parser)
     args = parser.parse_args()
 
     utils.set_random_seed(args.seed)

@@ -28,8 +28,8 @@ class BartConfig(TransformerConfig):
 
 @dataclass
 class BartForNMTConfig(BartConfig):
-    foreign_encoder_num_heads: int = 8
     foreign_encoder_num_layers: int = 6
+    foreign_encoder_num_heads: int = 8
 
 @dataclass
 class BartForGenerationOutput:
@@ -337,4 +337,5 @@ class BartForNMT(BartBase):
         ])
 
     def unfreeze_params(self) -> None:
-        model_utils.unfreeze_parameters(self, self.freezed_params)
+        if hasattr(self, 'freezed_params'):
+            model_utils.unfreeze_parameters(self, self.freezed_params)

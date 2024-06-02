@@ -19,6 +19,15 @@ def pretrain_opts(parser):
     _add_training_opts(parser)
     _add_compute_valid_bleu_opts(parser)
 
+def fine_tune_nmt_opts(parser):
+    """All options used in fine-tuning nmt"""
+    _add_general_opts(parser)
+    _add_dataset_opts(parser)
+    _add_model_opts(parser)
+    _add_training_opts(parser)
+    _add_fine_tune_nmt_opts(parser)
+    _add_compute_valid_bleu_opts(parser)
+
 def _add_general_opts(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group('General options')
     group.add_argument(
@@ -107,7 +116,7 @@ def _add_model_opts(parser: argparse.ArgumentParser) -> None:
         '--hidden-size',
         help='Hidden size (i.e. size of embedding vectors)',
         type=int,
-        default=768,
+        default=512,
     )
     group.add_argument(
         '--num-hidden-layers',
@@ -119,13 +128,13 @@ def _add_model_opts(parser: argparse.ArgumentParser) -> None:
         '--num-heads',
         help='Number of attention heads',
         type=int,
-        default=12,
+        default=8,
     )
     group.add_argument(
         '--intermediate-size',
         help='Intermediate size of the feed-forward network',
         type=int,
-        default=768 * 4,
+        default=512 * 4,
     )
     group.add_argument(
         '--dropout',
@@ -355,6 +364,28 @@ def _add_training_opts(parser: argparse.ArgumentParser) -> None:
         help='Maximum gradient norm for gradient clipping',
         type=float,
         default=1.0,
+    )
+
+
+def _add_fine_tune_nmt_opts(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group('Fine-tuning NMT')
+
+    group.add_argument(
+        '--freeze-params',
+        help='Whether to freeze parameters of the model (excluding foreign encoder, BART positional embeddings, and the self-attention input projection matrix of BART’s encoder first layer.)',
+        action='store_true',
+    )
+    group.add_argument(
+        '--foreign-encoder-num-layers',
+        help='Number of layers in the foreign encoder',
+        type=int,
+        default=6,
+    )
+    group.add_argument(
+        '--foreign-encoder-num-heads',
+        help='Number of heads in the foreign encoder',
+        type=int,
+        default=8,
     )
 
 def _add_compute_valid_bleu_opts(parser):
