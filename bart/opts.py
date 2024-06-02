@@ -366,7 +366,6 @@ def _add_training_opts(parser: argparse.ArgumentParser) -> None:
         default=1.0,
     )
 
-
 def _add_fine_tune_nmt_opts(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group('Fine-tuning NMT')
 

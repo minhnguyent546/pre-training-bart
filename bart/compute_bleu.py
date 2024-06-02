@@ -24,7 +24,6 @@ def compute_dataset_bleu(
     log_sentences: bool = False,
     logging_interval: int = 20,
     max_steps: int | None = None,
-    **kwargs,
 ) -> float:
 
     device = model.device

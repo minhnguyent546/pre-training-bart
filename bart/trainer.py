@@ -153,7 +153,7 @@ class Trainer:
             beam_return_topk=self.args.beam_return_topk,
             log_sentences=self.args.log_sentences,
             logging_interval=self.args.log_sentences_interval,
-            compute_bleu_max_steps=self.args.compute_bleu_max_steps,
+            max_steps=self.args.compute_bleu_max_steps,
         )
         self.writer.add_scalars('loss', {
             'train': self.accum_train_loss / self.args.valid_interval,
