@@ -8,6 +8,8 @@ import emoji
 
 import numpy as np
 
+import datasets
+
 from torch import nn
 import torch
 
@@ -35,6 +37,16 @@ def chunks(data: list | str, chunk_size: int = 1_000):
     for i in range(0, len(data), chunk_size):
         yield data[i:i+chunk_size]
 
+def load_dataset_from_processed_file(
+    data_file_format: str,
+    data_files,
+    test_size: int,
+    seed: int = 1061109567,
+) -> datasets.DatasetDict:
+    raw_dataset: datasets.DatasetDict = datasets.load_dataset(data_file_format, data_files=data_files)
+    dataset = raw_dataset['train'].train_test_split(test_size=test_size, shuffle=True, seed=seed)
+    return dataset
+
 def noam_decay(step_num: int, d_model: int = 768, warmup_steps: int = 4000):
     """
     As described in https://arxiv.org/pdf/1706.03762.pdf
@@ -45,22 +57,6 @@ def noam_decay(step_num: int, d_model: int = 768, warmup_steps: int = 4000):
 def ensure_dir(path: str) -> str:
     os.makedirs(path, exist_ok=True)
     return path
-
-def wnext(low: int, high: int, time: int = 0) -> int:
-    """Uneven distribution
-
-    If `time` = 0: this is equivalent to `np.random.randint(low, high)`
-    If `time` > 0: `wnext` is defined as `max(np.random.randint(low, high, size=(time + 1,)))`
-    If `time` < 0: this case is same as `time` > 0 but take min instead of max.
-    """
-
-    values = np.random.randint(low, high, size=(abs(time) + 1),)
-    if time == 0:
-        return values
-    elif time > 0:
-        return np.max(values)
-    else:
-        return np.min(values)
 
 def make_optimizer(
     model: BartBase,

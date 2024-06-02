@@ -11,8 +11,8 @@ def prepare_training_data_opts(parser: argparse.ArgumentParser) -> None:
     _add_general_opts(parser)
     _add_data_prepare_opts(parser)
 
-def train_opts(parser):
-    """All options used in train"""
+def pretrain_opts(parser):
+    """All options used in pretraining"""
     _add_general_opts(parser)
     _add_dataset_opts(parser)
     _add_model_opts(parser)
@@ -28,20 +28,26 @@ def _add_general_opts(parser: argparse.ArgumentParser) -> None:
         default='./checkpoints',
     )
     group.add_argument(
-        '--tokenizer-basename',
-        help='Tokenizer basename',
+        '--src-tokenizer',
+        help='Path to the source tokenizer',
         type=str,
-        default='tokenizer.json',
+        default='./checkpoints/src_tokenizer.json',
     )
     group.add_argument(
-        '--expr-name',
-        help='Experiment name',
+        '--target-tokenizer',
+        help='Path to the target tokenizer',
+        type=str,
+        default='./checkpoints/target_tokenizer.json',
+    )
+    group.add_argument(
+        '--expr-dir',
+        help='Experiment directory',
         type=str,
         default='runs/bart',
     )
     group.add_argument(
         '--seed',
-        help='Random seed',
+        help='Random seed (e.g. for model initialization, data loaders, ...)',
         type=int,
         default=1061109567,
     )
@@ -254,6 +260,13 @@ def _add_data_prepare_opts(parser: argparse.ArgumentParser) -> None:
 
 def _add_training_opts(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group('Training')
+
+    group.add_argument(
+        '--split-dataset-seed',
+        help='Seed for splitting dataset',
+        type=int,
+        default=1061109567,
+    )
     group.add_argument(
         '--from-checkpoint',
         help='Start training from this checkpoint',
@@ -285,6 +298,12 @@ def _add_training_opts(parser: argparse.ArgumentParser) -> None:
         default=4_000,
     )
     group.add_argument(
+        '--accum-step',
+        help='Gradient accumulation step',
+        type=int,
+        default=1,
+    )
+    group.add_argument(
         '--train-batch-size',
         help='Train batch size',
         type=int,
@@ -297,21 +316,21 @@ def _add_training_opts(parser: argparse.ArgumentParser) -> None:
         default=32,
     )
     group.add_argument(
-        '--accum-step',
-        help='Gradient accumulation step',
-        type=int,
-        default=1,
-    )
-    group.add_argument(
         '--fp16',
         help='Whether to use mixed precision training with fp16',
         action='store_true',
     )
     group.add_argument(
+        '--label-smoothing',
+        help='Label smoothing value for cross entropy loss',
+        type=float,
+        default=0.0,
+    )
+    group.add_argument(
         '--train-steps',
         help='Number of training steps',
         type=int,
-        default=100_000,
+        default=40_000,
     )
     group.add_argument(
         '--valid-interval',
@@ -326,6 +345,12 @@ def _add_training_opts(parser: argparse.ArgumentParser) -> None:
         default=4_000,
     )
     group.add_argument(
+        '--saved-checkpoints-limit',
+        help='Maximum number of saved checkpoints',
+        type=int,
+        default=6,
+    )
+    group.add_argument(
         '--max-grad-norm',
         help='Maximum gradient norm for gradient clipping',
         type=float,
@@ -336,9 +361,9 @@ def _add_compute_valid_bleu_opts(parser):
     group = parser.add_argument_group('Computing validation BLEU')
     group.add_argument(
         '--beam-size',
-        help='Beam size for beam search',
+        help='Beam size for beam search (use value less than 2 for greedy search)',
         type=int,
-        default=1,
+        default=4,
     )
     group.add_argument(
         '--beam-return-topk',
@@ -352,15 +377,16 @@ def _add_compute_valid_bleu_opts(parser):
         action='store_true',
     )
     group.add_argument(
-        '--logging-interval',
-        help='Logging interval',
+        '--log-sentences-interval',
+        help='Logging sentences interval',
         type=int,
-        default=500,
+        default=25,
     )
     group.add_argument(
         '--compute-bleu-max-steps',
         help='Maximum steps to compute BLEU',
         type=int,
+        default=200,
     )
 
 def _add_train_tokenizer_opts(parser: argparse.ArgumentParser) -> None:

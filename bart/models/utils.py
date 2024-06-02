@@ -1,6 +1,12 @@
+import glob
+import os
+
+from tqdm.autonotebook import tqdm
+
 from torch import Tensor, nn
 import torch
 import torch.nn.functional as Fun
+from torch.utils.data import DataLoader
 
 from tokenizers import Tokenizer
 
@@ -79,6 +85,39 @@ def create_decoder_4d_attn_causal_mask(
 
 def create_causal_mask(seq_length: int) -> Tensor:
     return torch.tril(torch.ones(seq_length, seq_length)).bool()
+
+def eval_model(
+    model,
+    eval_data_loader: DataLoader,
+    device: torch.device,
+) -> dict[str, float]:
+    is_training = model.training
+    model.eval()
+
+    accum_valid_loss = 0.0
+    batch_iter = tqdm(eval_data_loader, desc='Evaluating model')
+    with torch.no_grad():
+        for batch in batch_iter:
+            input_ids = batch['input_ids'].to(device).type(torch.int32)
+            input_mask = batch['input_mask'].to(device).type(torch.int32)
+            labels = batch['labels'].to(device).type(torch.int64)
+
+            outputs = model(
+                encoder_input_ids=input_ids,
+                encoder_attn_mask=input_mask,
+                labels=labels,
+            )
+            loss = outputs.lm_loss
+            accum_valid_loss += loss.item()
+
+            batch_iter.set_postfix({'loss': f'{loss.item():0.3f}'})
+
+    model.train(is_training)
+
+    num_iterations = len(eval_data_loader)
+    return {
+        'loss': accum_valid_loss / num_iterations,
+    }
 
 @torch.no_grad()
 def greedy_search_decode(
@@ -243,3 +282,17 @@ def beam_search_decode(
     cands = cands[:return_topk]
     result_cands = [cand[0].squeeze(0) for cand in cands]
     return result_cands
+
+def ensure_num_saved_checkpoints(
+    checkpoints_dir: str,
+    model_basename: str,
+    limit: int,
+) -> None:
+    checkpoints = glob.glob(os.path.join(checkpoints_dir, f'{model_basename}-*.pt'))
+    checkpoints = list(checkpoints)
+    if len(checkpoints) <= limit:
+        return
+
+    checkpoints = sorted(checkpoints)
+    for cp in checkpoints[:-limit]:
+        os.remove(cp)

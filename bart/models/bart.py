@@ -164,6 +164,7 @@ class BartForGeneration(BartBase):
         decoder_attn_mask: Tensor | None = None,
         encoder_output: Tensor | None = None,
         labels: Tensor | None = None,
+        label_smoothing: float = 0.0,
     ) -> BartForGenerationOutput:
         """
         Note that in Bart, if `decoder_input_ids` is not provided,
@@ -186,7 +187,7 @@ class BartForGeneration(BartBase):
         lm_logits = self.lm_head(outputs.decoder_output)
         lm_loss = None
         if labels is not None:
-            lm_loss = self.get_lm_loss(lm_logits, labels)
+            lm_loss = self.get_lm_loss(lm_logits, labels=labels, label_smoothing=label_smoothing)
 
         return BartForGenerationOutput(
             encoder_output=outputs.encoder_output,
@@ -195,13 +196,19 @@ class BartForGeneration(BartBase):
             lm_loss=lm_loss,
         )
 
-    def get_lm_loss(self, lm_logits: Tensor, labels: Tensor | None = None) -> Tensor | None:
+    def get_lm_loss(
+        self,
+        lm_logits: Tensor,
+        labels: Tensor | None = None,
+        label_smoothing: float = 0.0
+    ) -> Tensor | None:
         if labels is None:
             return None
         lm_loss = F.cross_entropy(
             lm_logits.view(-1, lm_logits.size(-1)),
             labels.view(-1),
             ignore_index=self.config.target_pad_token_id,
+            label_smoothing=label_smoothing,
         )
         return lm_loss
 
@@ -243,6 +250,7 @@ class BartForNMT(BartBase):
         decoder_attn_mask: Tensor | None = None,
         encoder_output: Tensor | None = None,
         labels: Tensor | None = None,
+        label_smoothing: float = 0.0,
     ) -> BartForGenerationOutput:
         """
         Note that in Bart, if `decoder_input_ids` is not provided,
@@ -288,7 +296,7 @@ class BartForNMT(BartBase):
         lm_logits = self.lm_head(decoder_output)
         lm_loss = None
         if labels is not None:
-            lm_loss = self.get_lm_loss(lm_logits, labels)
+            lm_loss = self.get_lm_loss(lm_logits, labels=labels, label_smoothing=label_smoothing)
 
         return BartForGenerationOutput(
             encoder_output=encoder_output,
@@ -297,13 +305,19 @@ class BartForNMT(BartBase):
             lm_loss=lm_loss,
         )
 
-    def get_lm_loss(self, lm_logits: Tensor, labels: Tensor | None = None) -> Tensor | None:
+    def get_lm_loss(
+        self,
+        lm_logits: Tensor,
+        labels: Tensor | None = None,
+        label_smoothing: float = 0.0,
+    ) -> Tensor | None:
         if labels is None:
             return None
         lm_loss = F.cross_entropy(
             lm_logits.view(-1, lm_logits.size(-1)),
             labels.view(-1),
             ignore_index=self.config.target_pad_token_id,
+            label_smoothing=label_smoothing,
         )
         return lm_loss
 
