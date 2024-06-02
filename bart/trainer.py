@@ -131,26 +131,7 @@ class Trainer:
                     batch_loss = 0.0
 
                     if (global_step + 1) % self.args.valid_interval == 0:
-                        valid_results = model_utils.eval_model(self.model, valid_data_loader, self.device)
-                        valid_bleu = compute_dataset_bleu(
-                            self.model,
-                            valid_data_loader.dataset,
-                            self.src_tokenizer,
-                            self.target_tokenizer,
-                            self.bart_config.target_seq_length,
-                            beam_size=self.args.beam_size,
-                            beam_return_topk=self.args.beam_return_topk,
-                            log_sentences=self.args.log_sentences,
-                            logging_interval=self.args.log_sentences_interval,
-                            compute_bleu_max_steps=self.args.compute_bleu_max_steps,
-                        )
-                        self.writer.add_scalars('loss', {
-                            'train': self.accum_train_loss / self.args.valid_interval,
-                            'valid': valid_results['loss'],
-                        }, global_step + 1)
-                        self.writer.add_scalar('valid_bleu', valid_bleu, global_step + 1)
-                        self.writer.flush()
-                        self.accum_train_loss = 0.0
+                        self._valid_step(global_step, valid_data_loader)
 
                     if (global_step + 1) % self.args.save_interval == 0:
                         self._save_checkpoint(global_step + 1)
@@ -159,6 +140,28 @@ class Trainer:
                     train_progress_bar.update()
                     if global_step >= self.args.train_steps:
                         break
+
+    def _valid_step(self, global_step: int, valid_data_loader: DataLoader):
+        valid_results = model_utils.eval_model(self.model, valid_data_loader, self.device)
+        valid_bleu = compute_dataset_bleu(
+            self.model,
+            valid_data_loader.dataset,
+            self.src_tokenizer,
+            self.target_tokenizer,
+            self.bart_config.target_seq_length,
+            beam_size=self.args.beam_size,
+            beam_return_topk=self.args.beam_return_topk,
+            log_sentences=self.args.log_sentences,
+            logging_interval=self.args.log_sentences_interval,
+            compute_bleu_max_steps=self.args.compute_bleu_max_steps,
+        )
+        self.writer.add_scalars('loss', {
+            'train': self.accum_train_loss / self.args.valid_interval,
+            'valid': valid_results['loss'],
+        }, global_step + 1)
+        self.writer.add_scalar('valid_bleu', valid_bleu, global_step + 1)
+        self.writer.flush()
+        self.accum_train_loss = 0.0
 
     def _save_checkpoint(
         self,
