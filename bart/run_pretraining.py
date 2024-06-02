@@ -70,9 +70,11 @@ def train_model(args: argparse.Namespace):
             shared_vocab=args.shared_vocab,
             tie_weights=args.tie_weights,
             hidden_size=args.hidden_size,
-            num_heads=args.num_heads,
-            num_hidden_layers=args.num_hidden_layers,
             intermediate_size=args.intermediate_size,
+            encoder_num_heads=args.encoder_num_heads,
+            encoder_num_hidden_layers=args.encoder_num_hidden_layers,
+            decoder_num_heads=args.decoder_num_heads,
+            decoder_num_hidden_layers=args.decoder_num_hidden_layers,
             dropout=args.dropout,
             attn_dropout=args.attn_dropout,
             activation=args.activation,
@@ -91,6 +93,7 @@ def train_model(args: argparse.Namespace):
             if key not in checkpoint_states:
                 raise ValueError(f'Missing key "{key}" in checkpoint')
         bart_config = checkpoint_states['config']
+        bart_config.device = device
 
     # model, optimizer, lr_scheduler, scaler
     model = BartForGeneration(bart_config)

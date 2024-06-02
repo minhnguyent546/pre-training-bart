@@ -29,13 +29,16 @@ class TransformerConfig:
     shared_vocab: bool = True
     tie_weights: bool = True  # whether to use tied weights between token embeddings and the pre-softmax linear layer
     hidden_size: int = 512
-    num_heads: int = 8
-    num_hidden_layers: int = 6
-    intermediate_size: int = 2048
+    intermediate_size: int = 512 * 4
+    encoder_num_heads: int = 8
+    encoder_num_hidden_layers: int = 6
+    decoder_num_heads: int = 8
+    decoder_num_hidden_layers: int = 6
     dropout: float = 0.1
     attn_dropout: float = 0.1
     activation: str = 'gelu'
     pre_norm: bool = False  # whether to place LayerNorm before each sub-layer (also known as pre-norm)
+    init_std: float = 0.02
 
 
 @dataclass
@@ -307,14 +310,14 @@ class TransformerEncoder(nn.Module):
         self.layers = nn.ModuleList([
             TransformerEncoderLayer(
                 config.hidden_size,
-                config.num_heads,
+                config.encoder_num_heads,
                 config.intermediate_size,
                 config.activation,
                 pre_norm=config.pre_norm,
                 dropout=config.dropout,
                 attn_dropout=config.attn_dropout,
             )
-            for _ in range(config.num_hidden_layers)
+            for _ in range(config.encoder_num_hidden_layers)
         ])
         self.pre_norm = config.pre_norm
         if self.pre_norm:
@@ -349,14 +352,14 @@ class TransformerDecoder(nn.Module):
         self.layers = nn.ModuleList([
             TransformerDecoderLayer(
                 config.hidden_size,
-                config.num_heads,
+                config.decoder_num_heads,
                 config.intermediate_size,
                 config.activation,
                 pre_norm=config.pre_norm,
                 dropout=config.dropout,
                 attn_dropout=config.attn_dropout,
             )
-            for _ in range(config.num_hidden_layers)
+            for _ in range(config.decoder_num_hidden_layers)
         ])
         self.pre_norm = config.pre_norm
         if self.pre_norm:
@@ -391,8 +394,8 @@ class TransformerBase(nn.Module):
     def _init_model_weights(self, std: float = 0.02):
         raise NotImplementedError()
 
-    def post_init(self) -> None:
-        self._init_model_weights()
+    def post_init(self, std: float = 0.02) -> None:
+        self._init_model_weights(std=std)
 
     def num_params(self) -> int:
         return sum(param.numel() for param in self.parameters() if param.requires_grad)
@@ -407,7 +410,7 @@ class Transformer(TransformerBase):
 
         if self.config.tie_weights:
             self._tie_weights()
-        self.post_init()
+        self.post_init(std=self.config.init_std)
 
     def _tie_weights(self) -> None:
         if not self.config.shared_vocab:

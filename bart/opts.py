@@ -119,22 +119,34 @@ def _add_model_opts(parser: argparse.ArgumentParser) -> None:
         default=512,
     )
     group.add_argument(
-        '--num-hidden-layers',
-        help='Number of hidden layers in the encoder block',
-        type=int,
-        default=6,
-    )
-    group.add_argument(
-        '--num-heads',
-        help='Number of attention heads',
-        type=int,
-        default=8,
-    )
-    group.add_argument(
         '--intermediate-size',
         help='Intermediate size of the feed-forward network',
         type=int,
         default=512 * 4,
+    )
+    group.add_argument(
+        '--encoder-num-heads',
+        help='Number of attention heads in encoder',
+        type=int,
+        default=8,
+    )
+    group.add_argument(
+        '--decoder-num-heads',
+        help='Number of attention heads in decoder',
+        type=int,
+        default=8,
+    )
+    group.add_argument(
+        '--encoder-num-hidden-layers',
+        help='Number of hidden layers in encoder',
+        type=int,
+        default=6,
+    )
+    group.add_argument(
+        '--decoder-num-hidden-layers',
+        help='Number of hidden layers in decoder',
+        type=int,
+        default=6,
     )
     group.add_argument(
         '--dropout',
