@@ -53,7 +53,7 @@ def train_model(args: argparse.Namespace):
         source_key='source',
         target_key='target',
         add_padding_tokens=False,
-        include_source_target_text=True,
+        include_source_target_text=False,
     )
     test_dataset = BilingualDataset(
         raw_dataset['test'],
@@ -64,7 +64,7 @@ def train_model(args: argparse.Namespace):
         source_key='source',
         target_key='target',
         add_padding_tokens=False,
-        include_source_target_text=True,
+        include_source_target_text=False,
     )
     pad_features = ['input_ids', 'decoder_input_ids', 'labels']
     train_data_loader = DataLoader(
@@ -90,7 +90,7 @@ def train_model(args: argparse.Namespace):
     checkpoint_states = None
     pretrained_checkpoint_states = None
     if args.from_pretrained is not None:
-        print(f'Starting fine-tuning from pretrained checkpoint {pretrained_checkpoint_states}')
+        print(f'Starting fine-tuning from pretrained checkpoint {args.from_pretrained}')
         pretrained_checkpoint_states = torch.load(args.from_pretrained, map_location=device)
         required_keys = ['model', 'config']
         for key in required_keys:
