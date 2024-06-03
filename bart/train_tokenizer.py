@@ -1,6 +1,6 @@
 """
 Train tokenizer from text files
-requires: python >= 3.10
+Requires: python >= 3.10
 """
 
 import argparse
@@ -48,6 +48,7 @@ def build_tokenizer(
     data_files: str | list[str],
     vocab_size: int,
     min_freq: int = 1,
+    lowercase: bool = False,
     save_path: str | None = None,
 ) -> Tokenizer:
     if isinstance(data_files, str):
@@ -56,6 +57,8 @@ def build_tokenizer(
     for data_file in data_files:
         with open(data_file, 'r', encoding='utf-8') as f:
             for line in tqdm(f, desc='Reading file', unit='lines'):
+                if lowercase:
+                    line = line.lower()
                 line = utils.clean_line(line)
                 data.append(line)
 
@@ -80,15 +83,12 @@ def main():
     opts.train_tokenizer_opts(parser)
     args = parser.parse_args()
 
-    utils.set_random_seed(args.seed)
-
-    checkpoints_dir = utils.ensure_dir(args.checkpoints_dir)
-    tokenizer_save_path = os.path.join(checkpoints_dir, args.tokenizer_basename)
     build_tokenizer(
-        args.data_file,
+        args.data_files,
         args.vocab_size,
         min_freq=args.min_freq,
-        save_path=tokenizer_save_path,
+        lowercase=args.lowercase,
+        save_path=args.output,
     )
 
 

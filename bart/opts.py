@@ -3,7 +3,6 @@ import argparse
 
 def train_tokenizer_opts(parser: argparse.ArgumentParser) -> None:
     """All options used in train_tokenizer"""
-    _add_general_opts(parser)
     _add_train_tokenizer_opts(parser)
 
 def prepare_training_data_opts(parser: argparse.ArgumentParser) -> None:
@@ -434,10 +433,17 @@ def _add_compute_valid_bleu_opts(parser):
 def _add_train_tokenizer_opts(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group('Train tokenizer')
     group.add_argument(
-        '--data-file',
+        '--data-files',
         nargs='+',
+        required=True,
         help='Path to the text files contain documents',
         type=str,
+    )
+    group.add_argument(
+        '--output',
+        help='Path to save the trained tokenizer',
+        type=str,
+        default='./tokenizer.json',
     )
     group.add_argument(
         '--vocab-size',
@@ -450,4 +456,9 @@ def _add_train_tokenizer_opts(parser: argparse.ArgumentParser) -> None:
         help='Minimum frequency of a token to be included in the vocabulary',
         type=int,
         default=3,
+    )
+    group.add_argument(
+        '--lowercase',
+        help='Whether to lowercase the text before training tokenizer',
+        action='store_true',
     )
