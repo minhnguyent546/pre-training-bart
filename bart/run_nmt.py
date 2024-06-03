@@ -102,6 +102,10 @@ def train_model(args: argparse.Namespace):
             bart_config.foreign_encoder_num_layers = args.foreign_encoder_num_layers
         if not hasattr(bart_config, 'foreign_encoder_num_heads'):
             bart_config.foreign_encoder_num_heads = args.foreign_encoder_num_heads
+
+        # source tokenizer maybe differ from pretrained checkpoint
+        bart_config.src_pad_token_id = src_tokenizer.token_to_id(SpecialToken.PAD),
+        bart_config.src_vocab_size = src_tokenizer.get_vocab_size(),
     elif args.from_checkpoint is not None:
         print(f'Loading states from checkpoint {args.from_checkpoint}')
 
