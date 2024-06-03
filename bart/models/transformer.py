@@ -40,7 +40,6 @@ class TransformerConfig:
     pre_norm: bool = False  # whether to place LayerNorm before each sub-layer (also known as pre-norm)
     init_std: float = 0.02
 
-
 @dataclass
 class TransformerOutput:
     encoder_output: Tensor
@@ -414,7 +413,7 @@ class Transformer(TransformerBase):
 
     def _tie_weights(self) -> None:
         if not self.config.shared_vocab:
-            raise RuntimeError('--tie-weight requires a joined vocabulary')
+            return
 
         assert self.encoder.token_embeddings.weight.shape == self.decoder.token_embeddings.weight.shape
         self.encoder.token_embeddings = self.decoder.token_embeddings

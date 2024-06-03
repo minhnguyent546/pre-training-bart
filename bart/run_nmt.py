@@ -103,9 +103,27 @@ def train_model(args: argparse.Namespace):
         if not hasattr(bart_config, 'foreign_encoder_num_heads'):
             bart_config.foreign_encoder_num_heads = args.foreign_encoder_num_heads
 
-        # source tokenizer maybe differ from pretrained checkpoint
-        bart_config.src_pad_token_id = src_tokenizer.token_to_id(SpecialToken.PAD),
-        bart_config.src_vocab_size = src_tokenizer.get_vocab_size(),
+        # re-assgigning some config values that do not depend on pre-trained model
+        # note that source tokenizer maybe different from the one used in the
+        # pre-trained model (as it is replaced with small additional encoder),
+        # but target tokenizer should be the same
+        bart_config.src_pad_token_id = src_tokenizer.token_to_id(SpecialToken.PAD)
+        bart_config.src_vocab_size = src_tokenizer.get_vocab_size()
+        bart_config.src_seq_length = args.src_seq_length
+        bart_config.target_seq_length = args.target_seq_length
+        bart_config.max_position_embeddings = args.max_position_embeddings
+        bart_config.device = device
+        bart_config.shared_vocab = args.shared_vocab
+        bart_config.tie_weights = args.tie_weights
+        bart_config.dropout = args.dropout
+        bart_config.attn_dropout = args.attn_dropout
+        bart_config.activation = args.activation
+        bart_config.pre_norm = args.pre_norm
+        bart_config.pooler_dropout = args.pooler_dropout
+        bart_config.pooler_activation = args.pooler_activation
+        bart_config.foreign_encoder_num_layers = args.foreign_encoder_num_layers
+        bart_config.foreign_encoder_num_heads = args.foreign_encoder_num_heads
+
     elif args.from_checkpoint is not None:
         print(f'Loading states from checkpoint {args.from_checkpoint}')
 
