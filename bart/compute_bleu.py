@@ -59,33 +59,40 @@ def compute_dataset_bleu(
         input_mask = Tensor(item['input_mask']).type(torch.int32)
         labels = item['labels']
 
-        if 'source_tokens' in item:
-            source_tokens = item['source_tokens']
-            source_token_ids = [
-                src_tokenizer.token_to_id(token)
-                for token in source_tokens
-                if token not in ignored_tokens
-            ]
+        # retrieving source and target text
+        if 'source_text' in item:
+            source_text = item['source_text']
         else:
-            source_token_ids = [
-                token_id for token_id in input_ids
-                if src_tokenizer.id_to_token(token_id) not in ignored_tokens
-            ]
-        if 'target_tokens' in item:
-            target_tokens = item['target_tokens']
-            target_token_ids = [
-                target_tokenizer.token_to_id(token)
-                for token in target_tokens
-                if token not in ignored_tokens
-            ]
+            if 'source_tokens' in item:
+                source_tokens = item['source_tokens']
+                source_token_ids = [
+                    src_tokenizer.token_to_id(token)
+                    for token in source_tokens
+                    if token not in ignored_tokens
+                ]
+            else:
+                source_token_ids = [
+                    token_id for token_id in input_ids
+                    if src_tokenizer.id_to_token(token_id) not in ignored_tokens
+                ]
+            source_text = src_tokenizer.decode(source_token_ids, skip_special_tokens=False)
+        if 'target_text' in item:
+            target_text = item['target_text']
         else:
-            target_token_ids = [
-                token_id for token_id in labels
-                if target_tokenizer.id_to_token(token_id) not in ignored_tokens
-            ]
+            if 'target_tokens' in item:
+                target_tokens = item['target_tokens']
+                target_token_ids = [
+                    target_tokenizer.token_to_id(token)
+                    for token in target_tokens
+                    if token not in ignored_tokens
+                ]
+            else:
+                target_token_ids = [
+                    token_id for token_id in labels
+                    if target_tokenizer.id_to_token(token_id) not in ignored_tokens
+                ]
+            target_text = target_tokenizer.decode(target_token_ids, skip_special_tokens=False)
 
-        source_text = src_tokenizer.decode(source_token_ids, skip_special_tokens=False)
-        target_text = target_tokenizer.decode(target_token_ids, skip_special_tokens=False)
 
         if beam_size is not None and beam_size > 1:
             # decoding with beam search

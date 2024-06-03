@@ -87,15 +87,27 @@ class Trainer:
 
             for batch_idx, batch in enumerate(train_data_loader):
                 input_ids = batch['input_ids'].to(self.device).type(torch.int32)
-                input_mask = batch['input_mask'].to(self.device).type(torch.int32)
                 labels = batch['labels'].to(self.device).type(torch.int64)
+                input_mask = None
+                decoder_input_ids = None
+                decoder_input_mask = None
+                if 'input_mask' in batch:
+                    input_mask = batch['input_mask'].to(self.device).type(torch.int32)
+                if 'decoder_input_ids' in batch:
+                    decoder_input_ids = batch['decoder_input_ids'].to(self.device).type(torch.int32)
+                if 'decoder_input_mask' in batch:
+                    decoder_input_mask = batch['decoder_input_mask'].to(self.device).type(torch.int32)
+
                 self.optimizer.zero_grad()
 
                 with self.autocast_ctx:
                     outputs = self.model(
                         encoder_input_ids=input_ids,
                         encoder_attn_mask=input_mask,
+                        decoder_input_ids=decoder_input_ids,
+                        decoder_attn_mask=decoder_input_mask,
                         labels=labels,
+                        label_smoothing=self.args.label_smoothing,
                     )
                     loss = outputs.lm_loss
                     if self.args.accum_step > 1:

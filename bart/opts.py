@@ -63,22 +63,45 @@ def _add_general_opts(parser: argparse.ArgumentParser) -> None:
 def _add_dataset_opts(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group('Dataset')
     group.add_argument(
-        '--data-file',
+        '--train-files',
         nargs='+',
-        help='Path to the prepared file contains training instances',
+        help='List of file for training split',
+        required=True,
+        type=str,
+    )
+    group.add_argument(
+        '--test-files',
+        nargs='+',
+        help='List of file for testing split',
+        required=True,
+        type=str,
+    )
+    group.add_argument(
+        '--validation-files',
+        nargs='*',
+        help='List of file for validation split',
         type=str,
     )
     group.add_argument(
         '--data-file-format',
         help='Data file format',
         type=str,
-        default='csv',
+        default='parquet',
     )
     group.add_argument(
         '--test-size',
         help='Test size',
         type=int,
-        default=10_000,
+    )
+    group.add_argument(
+        '--validation-size',
+        help='Validation size',
+        type=int,
+    )
+    group.add_argument(
+        '--field',
+        help='Field that contains the dataset in case of json files',
+        type=str,
     )
 
 def _add_model_opts(parser: argparse.ArgumentParser) -> None:

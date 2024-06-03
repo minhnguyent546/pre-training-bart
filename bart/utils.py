@@ -1,5 +1,6 @@
 import os
 import random
+from typing import Sequence, Mapping
 import re
 import sys
 import yaml
@@ -37,15 +38,46 @@ def chunks(data: list | str, chunk_size: int = 1_000):
     for i in range(0, len(data), chunk_size):
         yield data[i:i+chunk_size]
 
-def load_dataset_from_processed_file(
+def load_dataset_from_files(
     data_file_format: str,
-    data_files,
-    test_size: int,
+    data_files: str | Sequence[str] | Mapping[str, str | Sequence[str]] | None = None,
+    test_size: int | None = None,
+    validation_size: int | None = None,
     seed: int = 1061109567,
+    **kwargs,
 ) -> datasets.DatasetDict:
-    raw_dataset: datasets.DatasetDict = datasets.load_dataset(data_file_format, data_files=data_files)
-    dataset = raw_dataset['train'].train_test_split(test_size=test_size, shuffle=True, seed=seed)
-    return dataset
+    """
+    Load dataset from files and split into train, test, and validation sets.
+
+    If testing/validation split does not exist, it will be created from the training set,
+    with size `test_size`/`validation_size` if specified.
+    """
+    raw_dataset: datasets.DatasetDict = datasets.load_dataset(
+        data_file_format,
+        data_files=data_files,
+        **kwargs,
+    )
+    if 'train' not in raw_dataset:
+        raise ValueError('Training data is required')
+    if 'test' not in raw_dataset:
+        if test_size is not None:
+            if test_size > len(raw_dataset['train']):
+                raise ValueError(f'Test size {test_size} is larger than the training set {len(raw_dataset["train"])}')
+            raw_dataset = raw_dataset['train'].train_test_split(
+                test_size=test_size,
+                shuffle=True,
+                seed=seed,
+            )
+    if 'validation' not in raw_dataset:
+        if validation_size is not None:
+            if validation_size > len(raw_dataset['train']):
+                raise ValueError(f'Test size {validation_size} is larger than the training set {len(raw_dataset["train"])}')
+            raw_dataset = raw_dataset['train'].train_test_split(
+                test_size=validation_size,
+                shuffle=True,
+                seed=seed,
+            )
+    return raw_dataset
 
 def noam_decay(step_num: int, d_model: int = 768, warmup_steps: int = 4000):
     """

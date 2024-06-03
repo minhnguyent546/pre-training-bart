@@ -15,6 +15,7 @@ from bart import opts, utils
 from bart.constants import SpecialToken
 from bart.models import BartForNMT, BartForNMTConfig, LayerNormalization
 from bart.trainer import Trainer, TrainingArguments
+from bart.bilingual_dataset import BilingualDataset, CollatorWithPadding
 
 
 def train_model(args: argparse.Namespace):
@@ -22,26 +23,63 @@ def train_model(args: argparse.Namespace):
     # loading pre-trained tokenizers
     src_tokenizer: Tokenizer = Tokenizer.from_file(args.src_tokenizer)
     target_tokenizer: Tokenizer = Tokenizer.from_file(args.target_tokenizer)
+    assert src_tokenizer.token_to_id(SpecialToken.PAD) == target_tokenizer.token_to_id(SpecialToken.PAD)
+    pad_token_id = src_tokenizer.token_to_id(SpecialToken.PAD)
 
-    # create data loaders
-    saved_dataset = utils.load_dataset_from_processed_file(
+    # loading datasets
+    data_files = {}
+    if args.train_files:
+        data_files['train'] = args.train_files
+    if args.test_files:
+        data_files['test'] = args.test_files
+    if args.validation_files:
+        data_files['validation'] = args.validation_files
+    raw_dataset = utils.load_dataset_from_files(
         args.data_file_format,
-        args.data_file,
+        data_files,
         args.test_size,
+        args.validation_size,
         seed=args.split_dataset_seed,
+        field=args.field,
     )
-    saved_dataset = saved_dataset.with_format('torch')
+
+    # creating data loaders
+    train_dataset = BilingualDataset(
+        raw_dataset['train'],
+        src_tokenizer,
+        target_tokenizer,
+        args.src_seq_length,
+        args.target_seq_length,
+        source_key='source',
+        target_key='target',
+        add_padding_tokens=False,
+        include_source_target_text=True,
+    )
+    test_dataset = BilingualDataset(
+        raw_dataset['test'],
+        src_tokenizer,
+        target_tokenizer,
+        args.src_seq_length,
+        args.target_seq_length,
+        source_key='source',
+        target_key='target',
+        add_padding_tokens=False,
+        include_source_target_text=True,
+    )
+    pad_features = ['input_ids', 'decoder_input_ids', 'labels']
     train_data_loader = DataLoader(
-        saved_dataset['train'],
+        train_dataset,
         batch_size=args.train_batch_size,
         shuffle=True,
         pin_memory=True,
+        collate_fn=CollatorWithPadding(pad_token_id, pad_features),
     )
     test_data_loader = DataLoader(
-        saved_dataset['test'],
+        test_dataset,
         batch_size=args.eval_batch_size,
         shuffle=False,
         pin_memory=True,
+        collate_fn=CollatorWithPadding(pad_token_id, pad_features),
     )
 
     # training device

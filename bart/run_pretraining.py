@@ -27,22 +27,33 @@ def train_model(args: argparse.Namespace):
     src_tokenizer: Tokenizer = Tokenizer.from_file(args.src_tokenizer)
     target_tokenizer: Tokenizer = Tokenizer.from_file(args.target_tokenizer)
 
-    # create data loaders
-    saved_dataset = utils.load_dataset_from_processed_file(
+    # loading datasets
+    data_files = {}
+    if args.train_files:
+        data_files['train'] = args.train_files
+    if args.test_files:
+        data_files['test'] = args.test_files
+    if args.validation_files:
+        data_files['validation'] = args.validation_files
+    raw_dataset = utils.load_dataset_from_files(
         args.data_file_format,
-        args.data_file,
+        data_files,
         args.test_size,
+        args.validation_size,
         seed=args.split_dataset_seed,
+        field=args.field,
     )
-    saved_dataset = saved_dataset.with_format('torch')
+
+    # creating data loaders
+    raw_dataset = raw_dataset.with_format('torch')
     train_data_loader = DataLoader(
-        saved_dataset['train'],
+        raw_dataset['train'],
         batch_size=args.train_batch_size,
         shuffle=True,
         pin_memory=True,
     )
     test_data_loader = DataLoader(
-        saved_dataset['test'],
+        raw_dataset['test'],
         batch_size=args.eval_batch_size,
         shuffle=False,
         pin_memory=True,
