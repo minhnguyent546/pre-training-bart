@@ -404,6 +404,11 @@ def _add_fine_tune_nmt_opts(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group('Fine-tuning NMT')
 
     group.add_argument(
+        '--from-pretrained',
+        help='Path to the pretrained checkpoint for fine-tuning',
+        type=str,
+    )
+    group.add_argument(
         '--freeze-params',
         help='Whether to freeze parameters of the model (excluding foreign encoder, BART positional embeddings, and the self-attention input projection matrix of BART’s encoder first layer.)',
         action='store_true',

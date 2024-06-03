@@ -12,10 +12,10 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 from bart import opts, utils
+from bart.bilingual_dataset import BilingualDataset, CollatorWithPadding
 from bart.constants import SpecialToken
 from bart.models import BartForNMT, BartForNMTConfig, LayerNormalization
 from bart.trainer import Trainer, TrainingArguments
-from bart.bilingual_dataset import BilingualDataset, CollatorWithPadding
 
 
 def train_model(args: argparse.Namespace):
@@ -88,7 +88,33 @@ def train_model(args: argparse.Namespace):
     use_fp16 = args.fp16 and device.type == 'cuda'
 
     checkpoint_states = None
-    if args.from_checkpoint is None:
+    pretrained_checkpoint_states = None
+    if args.from_pretrained is not None:
+        print(f'Starting fine-tuning from pretrained checkpoint {pretrained_checkpoint_states}')
+        pretrained_checkpoint_states = torch.load(args.from_pretrained, map_location=device)
+        required_keys = ['model', 'config']
+        for key in required_keys:
+            if key not in pretrained_checkpoint_states:
+                raise ValueError(f'Missing key "{key}" in checkpoint {args.from_pretrained}')
+        bart_config = pretrained_checkpoint_states['config']
+        bart_config.device = device
+        if not hasattr(bart_config, 'foreign_encoder_num_layers'):
+            bart_config.foreign_encoder_num_layers = args.foreign_encoder_num_layers
+        if not hasattr(bart_config, 'foreign_encoder_num_heads'):
+            bart_config.foreign_encoder_num_heads = args.foreign_encoder_num_heads
+    elif args.from_checkpoint is not None:
+        print(f'Loading states from checkpoint {args.from_checkpoint}')
+
+        checkpoint_states = torch.load(args.from_checkpoint, map_location=device)
+        required_keys = ['model', 'optimizer', 'lr_scheduler', 'config']
+        if use_fp16:
+            required_keys.append('scaler')
+        for key in required_keys:
+            if key not in checkpoint_states:
+                raise ValueError(f'Missing key "{key}" in checkpoint {args.from_checkpoint}')
+        bart_config = checkpoint_states['config']
+        bart_config.device = device
+    else:
         print('Starting training from scratch')
         bart_config = BartForNMTConfig(
             src_pad_token_id=src_tokenizer.token_to_id(SpecialToken.PAD),
@@ -118,22 +144,6 @@ def train_model(args: argparse.Namespace):
             foreign_encoder_num_layers=args.foreign_encoder_num_layers,
             foreign_encoder_num_heads=args.foreign_encoder_num_heads,
         )
-    else:
-        print(f'Loading states from checkpoint {args.from_checkpoint}')
-
-        checkpoint_states = torch.load(args.from_checkpoint, map_location=device)
-        required_keys = ['model', 'optimizer', 'lr_scheduler', 'config']
-        if use_fp16:
-            required_keys.append('scaler')
-        for key in required_keys:
-            if key not in checkpoint_states:
-                raise ValueError(f'Missing key "{key}" in checkpoint')
-        bart_config = checkpoint_states['config']
-        bart_config.device = device
-        if not hasattr(bart_config, 'foreign_encoder_num_layers'):
-            bart_config.foreign_encoder_num_layers = args.foreign_encoder_num_layers
-        if not hasattr(bart_config, 'foreign_encoder_num_heads'):
-            bart_config.foreign_encoder_num_heads = args.foreign_encoder_num_heads
 
     # model, optimizer, lr_scheduler, scaler
     model = BartForNMT(bart_config)
@@ -158,6 +168,8 @@ def train_model(args: argparse.Namespace):
 
     initial_global_step = 0
     initial_accum_train_loss = 0.0
+    if pretrained_checkpoint_states is not None:
+        model.load_state_dict(pretrained_checkpoint_states['model'], strict=False)
     if checkpoint_states is not None:
         model.load_state_dict(checkpoint_states['model'])
         optimizer.load_state_dict(checkpoint_states['optimizer'])
@@ -168,6 +180,8 @@ def train_model(args: argparse.Namespace):
         if 'accum_train_loss' in checkpoint_states:
             initial_accum_train_loss = checkpoint_states['accum_train_loss']
 
+    # freezing params for fine-tuning on machine translation task
+    # for more details, see https://arxiv.org/abs/1910.13461 (Section 3.4)
     if args.freeze_params:
         model.freeze_params()
     else:
