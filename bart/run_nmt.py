@@ -130,6 +130,10 @@ def train_model(args: argparse.Namespace):
                 raise ValueError(f'Missing key "{key}" in checkpoint')
         bart_config = checkpoint_states['config']
         bart_config.device = device
+        if not hasattr(bart_config, 'foreign_encoder_num_layers'):
+            bart_config.foreign_encoder_num_layers = args.foreign_encoder_num_layers
+        if not hasattr(bart_config, 'foreign_encoder_num_heads'):
+            bart_config.foreign_encoder_num_heads = args.foreign_encoder_num_heads
 
     # model, optimizer, lr_scheduler, scaler
     model = BartForNMT(bart_config)
