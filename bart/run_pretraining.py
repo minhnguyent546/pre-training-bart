@@ -28,21 +28,16 @@ def train_model(args: argparse.Namespace):
     target_tokenizer: Tokenizer = Tokenizer.from_file(args.target_tokenizer)
 
     # loading datasets
-    data_files = {}
-    if args.train_files:
-        data_files['train'] = args.train_files
-    if args.test_files:
-        data_files['test'] = args.test_files
-    if args.validation_files:
-        data_files['validation'] = args.validation_files
     raw_dataset = utils.load_dataset_from_files(
         args.data_file_format,
-        data_files,
-        args.test_size,
-        args.validation_size,
+        data_files={'train': args.train_files, 'test': args.test_files, 'validation': args.validation_files},
+        test_size=args.test_size,
+        validation_size=args.validation_size,
         seed=args.split_dataset_seed,
         field=args.field,
     )
+    # TODO: check if raw_dataset contains 'train' and 'test' split
+    assert 'train' in raw_dataset and 'test' in raw_dataset
 
     # creating data loaders
     raw_dataset = raw_dataset.with_format('torch')

@@ -42,55 +42,72 @@ class BilingualDataset(Dataset):
         self.eos_token_id = src_tokenizer.token_to_id(SpecialToken.EOS)
         self.pad_token_id = src_tokenizer.token_to_id(SpecialToken.PAD)
 
+        self.post_init()
+
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, index):
-        src_text = self.dataset[index][self.source_key]
+        source_text = self.dataset[index][self.source_key]
         target_text = self.dataset[index][self.target_key]
 
-        encoder_input_ids = self.src_tokenizer.encode(src_text).ids
+        input_ids = self.src_tokenizer.encode(source_text).ids
         labels = self.target_tokenizer.encode(target_text).ids
 
-        encode_num_paddings, decode_num_paddings = 0, 0
+        input_num_paddings, label_num_paddings = 0, 0
         if self.add_padding_tokens:
-            encode_num_paddings = self.src_seq_length - len(encoder_input_ids) - 2  # exclude <SOS> & <EOS>
-            decode_num_paddings = self.target_seq_length - len(labels) - 1  # exclude <SOS> | <EOS>
+            input_num_paddings = self.src_seq_length - len(input_ids) - 2  # exclude <SOS> & <EOS>
+            label_num_paddings = self.target_seq_length - len(labels) - 1  # exclude <SOS> | <EOS>
 
-        assert encode_num_paddings >= 0, "The length of the source text is too long"
-        assert decode_num_paddings >= 0, "The length of the target text is too long"
+        assert input_num_paddings >= 0, "The length of the source text is too long"
+        assert label_num_paddings >= 0, "The length of the target text is too long"
 
-        encoder_input_ids = torch.cat([
+        input_ids = torch.cat([
             Tensor([self.sos_token_id]),
-            Tensor(encoder_input_ids),
+            Tensor(input_ids),
             Tensor([self.eos_token_id]),
-            Tensor([self.pad_token_id]).repeat(encode_num_paddings)
-        ]).type(torch.int32)
-        decoder_input_ids = torch.cat([
-            Tensor([self.sos_token_id]),
-            Tensor(labels),
-            Tensor([self.pad_token_id]).repeat(decode_num_paddings)
+            Tensor([self.pad_token_id]).repeat(input_num_paddings)
         ]).type(torch.int32)
         labels = torch.cat([
             Tensor(labels),
             Tensor([self.eos_token_id]),
-            Tensor([self.pad_token_id]).repeat(decode_num_paddings)
-        ]).type(torch.int64)  # int32 has a problem with nll loss forward on cuda
+            Tensor([self.pad_token_id]).repeat(label_num_paddings)
+        ]).type(torch.int64)  # labels must be of type int64 for NLLLoss to work
 
         if self.add_padding_tokens:
-            assert encoder_input_ids.size(0) == self.src_seq_length
-            assert decoder_input_ids.size(0) == self.target_seq_length
+            assert input_ids.size(0) == self.src_seq_length
             assert labels.size(0) == self.target_seq_length
 
         item = {
-            'input_ids': encoder_input_ids,
-            'decoder_input_ids': decoder_input_ids,
+            'input_ids': input_ids,
             'labels': labels,
         }
         if self.include_source_target_text:
-            item['source_text'] = src_text
+            item['source_text'] = source_text
             item['target_text'] = target_text
         return item
+
+    def post_init(self) -> None:
+        self.remove_invalid_pairs()
+
+    def remove_invalid_pairs(self) -> None:
+        def _remove_invalid_pair_fn(examples: dict[str, list]) -> list[bool]:
+            is_valid_item = [True] * len(examples[self.source_key])
+            for item_id, (source_text, target_text) in enumerate(zip(examples[self.source_key], examples[self.target_key])):
+                if min(len(source_text), len(target_text)) == 0:
+                    is_valid_item[item_id] = False
+                    continue
+                len_ratio = max(len(source_text), len(target_text)) / min(len(source_text), len(target_text))
+                if len_ratio > 1.5:
+                    is_valid_item[item_id] = False
+                    continue
+                num_src_tokens = len(self.src_tokenizer.encode(source_text).tokens)
+                num_target_tokens = len(self.target_tokenizer.encode(target_text).tokens)
+                is_valid_item[item_id] = (min(num_src_tokens, num_target_tokens) > 0 and
+                                          num_src_tokens + 2 <= self.src_seq_length and
+                                          num_target_tokens + 1 <= self.target_seq_length)
+            return is_valid_item
+        self.dataset = self.dataset.filter(_remove_invalid_pair_fn, batched=True)
 
 class CollatorWithPadding:
     def __init__(self, padding_value: int, pad_features: list[str] | None = None) -> None:
@@ -98,16 +115,26 @@ class CollatorWithPadding:
         self.pad_features = pad_features if pad_features is not None else []
 
     def __call__(self, original_batch: list[dict[str, Any]]) -> dict[str, Any]:
+        # assume each item in `original_batch` have the same keys/features
         all_features = original_batch[0].keys()
 
-        # list of feature that will not be padded
-        remain_features = [key for key in all_features if key not in self.pad_features]
+        # list of features that will be padded
+        pad_features = [feature for feature in self.pad_features if feature in all_features]
+        # list of features that will not be padded
+        no_pad_features = [feature for feature in all_features if feature not in pad_features]
 
-        feature_dict = {key: [item[key] for item in original_batch] for key in self.pad_features}
-        batch = {key: [item[key] for item in original_batch] for key in remain_features}
+        # list[dict[str, Any]] -> dict[str, Any]
         feature_dict = {
-            key: pad_sequence(value, batch_first=True, padding_value=self.padding_value)
-            for key, value in feature_dict.items()
+            feature: [item[feature] for item in original_batch]
+            for feature in pad_features
+        }
+        feature_dict = {
+            feature: pad_sequence(value, batch_first=True, padding_value=self.padding_value)
+            for feature, value in feature_dict.items()
+        }
+        batch = {
+            feature: [item[feature] for item in original_batch]
+            for feature in no_pad_features
         }
         batch.update(feature_dict)
         return batch

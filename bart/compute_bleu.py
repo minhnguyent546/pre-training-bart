@@ -56,8 +56,10 @@ def compute_dataset_bleu(
         # input_ids has form of: <s> ... </s> [PAD] [PAD]...
         # labels has form of   : ... </s> [PAD] [PAD]...
         input_ids = Tensor(item['input_ids']).type(torch.int32)
-        input_mask = Tensor(item['input_mask']).type(torch.int32)
-        labels = item['labels']
+        labels = Tensor(item['labels']).type(torch.int64)
+        input_mask = None
+        if 'input_mask' in item:
+            input_mask = Tensor(item['input_mask']).type(torch.int32)
 
         # retrieving source and target text
         if 'source_text' in item:
@@ -92,7 +94,6 @@ def compute_dataset_bleu(
                     if target_tokenizer.id_to_token(token_id) not in ignored_tokens
                 ]
             target_text = target_tokenizer.decode(target_token_ids, skip_special_tokens=False)
-
 
         if beam_size is not None and beam_size > 1:
             # decoding with beam search

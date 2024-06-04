@@ -1,8 +1,8 @@
 import os
 import random
-from typing import Sequence, Mapping
 import re
 import sys
+from typing import Literal
 import yaml
 
 import emoji
@@ -39,8 +39,8 @@ def chunks(data: list | str, chunk_size: int = 1_000):
         yield data[i:i+chunk_size]
 
 def load_dataset_from_files(
-    data_file_format: str,
-    data_files: str | Sequence[str] | Mapping[str, str | Sequence[str]] | None = None,
+    data_file_format: Literal['json', 'csv', 'parquet', 'arrow'],
+    data_files: dict[str, str | list[str] | None],
     test_size: int | None = None,
     validation_size: int | None = None,
     seed: int = 1061109567,
@@ -52,17 +52,20 @@ def load_dataset_from_files(
     If testing/validation split does not exist, it will be created from the training set,
     with size `test_size`/`validation_size` if specified.
     """
+    data_files = {name: split for name, split in data_files.items() if split}
+    if 'train' not in data_files:
+        raise ValueError('Training set is required, but not found in `data_files`')
+    if data_file_format != 'json':
+        kwargs.pop('field', None)
     raw_dataset: datasets.DatasetDict = datasets.load_dataset(
         data_file_format,
         data_files=data_files,
         **kwargs,
     )
-    if 'train' not in raw_dataset:
-        raise ValueError('Training data is required')
     if 'test' not in raw_dataset:
         if test_size is not None:
             if test_size > len(raw_dataset['train']):
-                raise ValueError(f'Test size {test_size} is larger than the training set {len(raw_dataset["train"])}')
+                raise ValueError(f'Test size {test_size} is larger than the train set {len(raw_dataset["train"])}')
             raw_dataset = raw_dataset['train'].train_test_split(
                 test_size=test_size,
                 shuffle=True,
@@ -71,12 +74,16 @@ def load_dataset_from_files(
     if 'validation' not in raw_dataset:
         if validation_size is not None:
             if validation_size > len(raw_dataset['train']):
-                raise ValueError(f'Test size {validation_size} is larger than the training set {len(raw_dataset["train"])}')
-            raw_dataset = raw_dataset['train'].train_test_split(
+                raise ValueError(f'Validation size {validation_size} is larger than the train set {len(raw_dataset["train"])}')
+            old_dataset = raw_dataset
+            raw_dataset = old_dataset['train'].train_test_split(
                 test_size=validation_size,
                 shuffle=True,
                 seed=seed,
             )
+            raw_dataset['validation'] = raw_dataset.pop('test')
+            if 'test' in old_dataset:
+                raw_dataset['test'] = old_dataset['test']
     return raw_dataset
 
 def noam_decay(step_num: int, d_model: int = 768, warmup_steps: int = 4000):

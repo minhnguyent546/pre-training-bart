@@ -27,21 +27,16 @@ def train_model(args: argparse.Namespace):
     pad_token_id = src_tokenizer.token_to_id(SpecialToken.PAD)
 
     # loading datasets
-    data_files = {}
-    if args.train_files:
-        data_files['train'] = args.train_files
-    if args.test_files:
-        data_files['test'] = args.test_files
-    if args.validation_files:
-        data_files['validation'] = args.validation_files
     raw_dataset = utils.load_dataset_from_files(
         args.data_file_format,
-        data_files,
-        args.test_size,
-        args.validation_size,
+        data_files={'train': args.train_files, 'test': args.test_files, 'validation': args.validation_files},
+        test_size=args.test_size,
+        validation_size=args.validation_size,
         seed=args.split_dataset_seed,
         field=args.field,
     )
+    # TODO: check if raw_dataset contains 'train' and 'test' split
+    assert 'train' in raw_dataset and 'test' in raw_dataset
 
     # creating data loaders
     train_dataset = BilingualDataset(
@@ -66,20 +61,21 @@ def train_model(args: argparse.Namespace):
         add_padding_tokens=False,
         include_source_target_text=False,
     )
-    pad_features = ['input_ids', 'decoder_input_ids', 'labels']
+    pad_features = ['input_ids', 'labels']
+    data_collator = CollatorWithPadding(pad_token_id, pad_features)
     train_data_loader = DataLoader(
         train_dataset,
         batch_size=args.train_batch_size,
         shuffle=True,
         pin_memory=True,
-        collate_fn=CollatorWithPadding(pad_token_id, pad_features),
+        collate_fn=data_collator,
     )
     test_data_loader = DataLoader(
         test_dataset,
         batch_size=args.eval_batch_size,
         shuffle=False,
         pin_memory=True,
-        collate_fn=CollatorWithPadding(pad_token_id, pad_features),
+        collate_fn=data_collator,
     )
 
     # training device
@@ -97,11 +93,6 @@ def train_model(args: argparse.Namespace):
             if key not in pretrained_checkpoint_states:
                 raise ValueError(f'Missing key "{key}" in checkpoint {args.from_pretrained}')
         bart_config = pretrained_checkpoint_states['config']
-        bart_config.device = device
-        if not hasattr(bart_config, 'foreign_encoder_num_layers'):
-            bart_config.foreign_encoder_num_layers = args.foreign_encoder_num_layers
-        if not hasattr(bart_config, 'foreign_encoder_num_heads'):
-            bart_config.foreign_encoder_num_heads = args.foreign_encoder_num_heads
 
         # re-assgigning some config values that do not depend on pre-trained model
         # note that source tokenizer maybe different from the one used in the

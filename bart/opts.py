@@ -71,9 +71,8 @@ def _add_dataset_opts(parser: argparse.ArgumentParser) -> None:
     )
     group.add_argument(
         '--test-files',
-        nargs='+',
+        nargs='*',
         help='List of file for testing split',
-        required=True,
         type=str,
     )
     group.add_argument(
@@ -86,6 +85,7 @@ def _add_dataset_opts(parser: argparse.ArgumentParser) -> None:
         '--data-file-format',
         help='Data file format',
         type=str,
+        choices=['json', 'csv', 'parquet', 'arrow'],
         default='parquet',
     )
     group.add_argument(

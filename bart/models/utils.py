@@ -99,12 +99,22 @@ def eval_model(
     with torch.no_grad():
         for batch in batch_iter:
             input_ids = batch['input_ids'].to(device).type(torch.int32)
-            input_mask = batch['input_mask'].to(device).type(torch.int32)
             labels = batch['labels'].to(device).type(torch.int64)
+            input_mask = None
+            decoder_input_ids = None
+            decoder_input_mask = None
+            if 'input_mask' in batch:
+                input_mask = batch['input_mask'].to(device).type(torch.int32)
+            if 'decoder_input_ids' in batch:
+                decoder_input_ids = batch['decoder_input_ids'].to(device).type(torch.int32)
+            if 'decoder_input_mask' in batch:
+                decoder_input_mask = batch['decoder_input_mask'].to(device).type(torch.int32)
 
             outputs = model(
                 encoder_input_ids=input_ids,
                 encoder_attn_mask=input_mask,
+                decoder_input_ids=decoder_input_ids,
+                decoder_attn_mask=decoder_input_mask,
                 labels=labels,
             )
             loss = outputs.lm_loss
