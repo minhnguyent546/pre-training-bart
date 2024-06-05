@@ -1,7 +1,6 @@
 """
 Prepare data for pre-training BART with denoising objective.
-
-requires: python >= 3.10
+Requires: python >= 3.10
 """
 
 import argparse
@@ -361,9 +360,7 @@ def main():
 
     utils.set_random_seed(args.seed)
 
-    checkpoints_dir = utils.ensure_dir(args.checkpoints_dir)
-    tokenizer_save_path = os.path.join(checkpoints_dir, args.tokenizer_basename)
-    tokenizer = Tokenizer.from_file(tokenizer_save_path)
+    tokenizer = Tokenizer.from_file(args.src_tokenizer)
     create_training_instances(tokenizer, args)
 
 
