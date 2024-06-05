@@ -4,7 +4,6 @@ Requires: python >= 3.10
 """
 
 import argparse
-import os
 from tqdm.auto import tqdm
 
 from tokenizers import AddedToken, Tokenizer
@@ -56,10 +55,10 @@ def build_tokenizer(
     data = []
     for data_file in data_files:
         with open(data_file, 'r', encoding='utf-8') as f:
-            for line in tqdm(f, desc='Reading file', unit='lines'):
+            for line in tqdm(f, desc='Reading file', unit=' lines'):
                 if lowercase:
                     line = line.lower()
-                line = utils.clean_line(line)
+                line = utils.clean_text(line, strip=True, keep_punct=True)
                 data.append(line)
 
     tokenizer = train_tokenizer(

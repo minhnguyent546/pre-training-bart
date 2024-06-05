@@ -9,29 +9,35 @@ Output file will have the following format:
 
 import argparse
 import json
+import re
 from tqdm import tqdm
 from typing import List
 
 
-def convert_oscar_json_to_txt(args: argparse.Namespace) -> None:
+def convert_oscar_json_to_txt(
+    input_files: list[str],
+    output_file: str,
+    feature: str,
+    seperators: str = '.?!',
+) -> None:
     documents: List[str] = []
-    for input_file in args.input_file:
+    total_sents = 0
+    for input_file in input_files:
         with open(input_file, 'r', encoding='utf-8') as f:
             json_data = json.load(f)
-            for document in tqdm(json_data, desc='Reading json file'):
-                sentences = document[args.feature].split(args.seperator)
-                sentences = [sent.strip() for sent in sentences]
-                sentences = [sent for sent in sentences if sent]
-                documents.append('\n'.join(sentences))
+            for document in tqdm(json_data, desc='Reading json file', unit=' documents'):
+                sents = re.split(fr'(?<=[{seperators}])\s+', document[feature])
+                sents = [sent.strip() for sent in sents]
+                sents = [sent for sent in sents if sent]
+                documents.append('\n'.join(sents))
+                total_sents += len(sents)
 
-    with open(args.output_file, 'w', encoding='utf-8') as f:
+    with open(output_file, 'w', encoding='utf-8') as f:
         for document in documents:
             f.write(document)
             f.write('\n\n')
 
-    total_lines = len(documents)
-    print(f'File saved in {args.output_file}')
-    print(f'Total lines: {total_lines}')
+    print(f'Wrote {total_sents} sentences to {output_file}')
 
 def main():
     parser = argparse.ArgumentParser(
@@ -39,15 +45,15 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        'input_file',
+        'input_files',
         nargs='+',
-        help='Path to the input json files',
+        help='Path to the json files',
         type=str,
     )
     parser.add_argument(
         '-o',
         '--output-file',
-        help='Path to place the output txt file',
+        help='Path to place the output text file',
         type=str,
         default='./output.txt',
     )
@@ -60,14 +66,14 @@ def main():
     )
     parser.add_argument(
         '-s',
-        '--seperator',
-        help='Seperator to use for splitting sentences in a document',
+        '--seperators',
+        help='Seperators to use for splitting sentences in a document',
         type=str,
-        default='.',
+        default='.?!',
     )
 
     args = parser.parse_args()
-    convert_oscar_json_to_txt(args)
+    convert_oscar_json_to_txt(args.input_files, args.output_file, args.feature, args.seperators)
 
 
 if __name__ == '__main__':
