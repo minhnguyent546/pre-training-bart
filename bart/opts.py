@@ -236,6 +236,12 @@ def _add_data_prepare_opts(parser: argparse.ArgumentParser) -> None:
         action='store_true',
     )
     group.add_argument(
+        '--write-interval',
+        help='Interval between writing to the output file',
+        type=int,
+        default=400_000,
+    )
+    group.add_argument(
         '--num-rounds',
         help='Number of times to duplicate the input data (with different masks)',
         type=int,

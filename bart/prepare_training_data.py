@@ -37,8 +37,8 @@ def create_training_instances(tokenizer: Tokenizer, args: argparse.Namespace) ->
     documents: list[TokenList] = [[]]
     for data_file in args.data_file:
         with open(data_file, 'r', encoding='utf-8') as f:
-            for line in tqdm(f, desc=f'Reading data from {data_file}', unit='lines'):
-                line = utils.clean_line(line)
+            for line in tqdm(f, desc=f'Reading data from {data_file}', unit=' lines'):
+                line = utils.clean_text(line, strip=True, keep_punct=True)
                 if not line:
                     documents.append([])
                     continue
@@ -54,9 +54,10 @@ def create_training_instances(tokenizer: Tokenizer, args: argparse.Namespace) ->
     mask_span_distribution = create_poisson_distribution(args.span_lengths_lambda, args.src_seq_length)
 
     output_file, ext = os.path.splitext(args.output_file)
+    training_instances = []
+    file_count = 0
     for round_idx in range(args.num_rounds):
         docs_iter = tqdm(range(len(documents)), desc=f'Working on {round_idx + 1}-th round')
-        training_instances = []
         for doc_idx in docs_iter:
             training_instances.extend(create_training_instances_from_doc(
                 documents,
@@ -72,8 +73,22 @@ def create_training_instances(tokenizer: Tokenizer, args: argparse.Namespace) ->
                 args.short_seq_prob,
                 args.whole_word_masking,
             ))
+            if len(training_instances) >= args.write_interval:
+                write_training_instances_to_file(
+                    f'{output_file}-{file_count + 1}{ext}',
+                    args.format,
+                    training_instances,
+                    tokenizer,
+                    args.src_seq_length,
+                    args.target_seq_length,
+                    args.save_tokens,
+                )
+                training_instances = []
+                file_count += 1
+
+    if training_instances:
         write_training_instances_to_file(
-            f'{output_file}-{round_idx + 1}{ext}',
+            f'{output_file}-{file_count + 1}{ext}',
             args.format,
             training_instances,
             tokenizer,
@@ -81,7 +96,6 @@ def create_training_instances(tokenizer: Tokenizer, args: argparse.Namespace) ->
             args.target_seq_length,
             args.save_tokens,
         )
-        del training_instances
 
 def create_training_instances_from_doc(
     documents: list[TokenList],
