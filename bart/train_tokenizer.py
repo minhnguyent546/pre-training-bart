@@ -12,6 +12,7 @@ import tokenizers.decoders
 import tokenizers.models
 import tokenizers.pre_tokenizers
 import tokenizers.trainers
+import tokenizers.normalizers
 
 from bart import opts, utils
 from bart.constants import SpecialToken
@@ -19,15 +20,26 @@ from bart.constants import SpecialToken
 
 def train_tokenizer(
     data_iter,
-    vocab_size: int = 30_000,
-    min_freq: int = 1,
-    show_progress: bool = True
+    vocab_size: int = 32_000,
+    min_freq: int = 2,
+    lowercase: bool = False,
+    show_progress: bool = True,
 ) -> Tokenizer:
     tokenizer = Tokenizer(tokenizers.models.WordPiece(
         unk_token=SpecialToken.UNK,
         max_input_chars_per_word=100,
     ))  # pyright: ignore[reportCallIssue]
+    # pre-tokenizer
     tokenizer.pre_tokenizer = tokenizers.pre_tokenizers.Whitespace()
+
+    # normalizers
+    normalizer_list = []
+    if lowercase:
+        normalizer_list.append(tokenizers.normalizers.Lowercase())
+    if normalizer_list:
+        tokenizer.normalizer = tokenizers.normalizers.Sequence(normalizer_list)
+
+    # decoder
     tokenizer.decoder = tokenizers.decoders.WordPiece(
         prefix='##',
         cleanup=False,
@@ -56,8 +68,6 @@ def build_tokenizer(
     for data_file in data_files:
         with open(data_file, 'r', encoding='utf-8') as f:
             for line in tqdm(f, desc='Reading file', unit=' lines'):
-                if lowercase:
-                    line = line.lower()
                 line = utils.clean_text(line, strip=True, keep_punct=True)
                 data.append(line)
 
@@ -65,6 +75,7 @@ def build_tokenizer(
         utils.chunks(data, chunk_size=10_000),
         vocab_size=vocab_size,
         min_freq=min_freq,
+        lowercase=lowercase,
     )
     print(f'Vocab size: {tokenizer.get_vocab_size()}')
 
