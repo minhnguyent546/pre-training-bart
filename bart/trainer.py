@@ -37,7 +37,6 @@ class TrainingArguments():
     log_sentences_interval: int = 25
     compute_bleu_max_steps: int = 200
 
-
 class Trainer:
     def __init__(
         self,
@@ -186,6 +185,7 @@ class Trainer:
             'lr_scheduler': self.lr_scheduler.state_dict(),
             'scaler': self.scaler.state_dict(),
             'config': self.bart_config,
+            'training_args': self.args,
             'accum_train_loss': self.accum_train_loss,
         }
         model_utils.ensure_num_saved_checkpoints(

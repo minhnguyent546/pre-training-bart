@@ -85,37 +85,8 @@ def train_model(args: argparse.Namespace):
 
     checkpoint_states = None
     pretrained_checkpoint_states = None
-    if args.from_pretrained is not None:
-        print(f'Starting fine-tuning from pretrained checkpoint {args.from_pretrained}')
-        pretrained_checkpoint_states = torch.load(args.from_pretrained, map_location=device)
-        required_keys = ['model', 'config']
-        for key in required_keys:
-            if key not in pretrained_checkpoint_states:
-                raise ValueError(f'Missing key "{key}" in checkpoint {args.from_pretrained}')
-        bart_config = pretrained_checkpoint_states['config']
-
-        # re-assgigning some config values that do not depend on pre-trained model
-        # note that source tokenizer maybe different from the one used in the
-        # pre-trained model (as it is replaced with small additional encoder),
-        # but target tokenizer should be the same
-        bart_config.src_pad_token_id = src_tokenizer.token_to_id(SpecialToken.PAD)
-        bart_config.src_vocab_size = src_tokenizer.get_vocab_size()
-        bart_config.src_seq_length = args.src_seq_length
-        bart_config.target_seq_length = args.target_seq_length
-        bart_config.max_position_embeddings = args.max_position_embeddings
-        bart_config.device = device
-        bart_config.shared_vocab = args.shared_vocab
-        bart_config.tie_weights = args.tie_weights
-        bart_config.dropout = args.dropout
-        bart_config.attn_dropout = args.attn_dropout
-        bart_config.activation = args.activation
-        bart_config.pre_norm = args.pre_norm
-        bart_config.pooler_dropout = args.pooler_dropout
-        bart_config.pooler_activation = args.pooler_activation
-        bart_config.foreign_encoder_num_layers = args.foreign_encoder_num_layers
-        bart_config.foreign_encoder_num_heads = args.foreign_encoder_num_heads
-
-    elif args.from_checkpoint is not None:
+    if args.from_checkpoint is not None:
+        # resume from previous checkpoint
         print(f'Loading states from checkpoint {args.from_checkpoint}')
 
         checkpoint_states = torch.load(args.from_checkpoint, map_location=device)
@@ -125,11 +96,15 @@ def train_model(args: argparse.Namespace):
         for key in required_keys:
             if key not in checkpoint_states:
                 raise ValueError(f'Missing key "{key}" in checkpoint {args.from_checkpoint}')
-        bart_config = checkpoint_states['config']
-        bart_config.device = device
+        bart_for_nmt_config = checkpoint_states['config']
+        assert isinstance(bart_for_nmt_config, BartForNMTConfig)
+        bart_for_nmt_config.device = device
     else:
-        print('Starting training from scratch')
-        bart_config = BartForNMTConfig(
+        # start training from scratch or from pre-trained model
+
+        # TODO: currently, the code below assumes `target_tokenizer`
+        # is the same as the one that used during pre-training.
+        bart_for_nmt_config = BartForNMTConfig(
             src_pad_token_id=src_tokenizer.token_to_id(SpecialToken.PAD),
             target_pad_token_id=target_tokenizer.token_to_id(SpecialToken.PAD),
             target_start_token_id=target_tokenizer.token_to_id(SpecialToken.SOS),
@@ -157,9 +132,29 @@ def train_model(args: argparse.Namespace):
             foreign_encoder_num_layers=args.foreign_encoder_num_layers,
             foreign_encoder_num_heads=args.foreign_encoder_num_heads,
         )
+        if args.from_pretrained is not None:
+            print(f'Starting fine-tuning from pretrained checkpoint {args.from_pretrained}')
+            pretrained_checkpoint_states = torch.load(args.from_pretrained, map_location=device)
+            required_keys = ['model', 'config']
+            for key in required_keys:
+                if key not in pretrained_checkpoint_states:
+                    raise ValueError(f'Missing key "{key}" in checkpoint {args.from_pretrained}')
+            pretrained_bart_config = pretrained_checkpoint_states['config']
+            assert isinstance(pretrained_bart_config, BartForNMTConfig)
+            pretrained_config_keys = [
+                'target_pad_token_id', 'target_start_token_id', 'target_end_token_id',
+                'target_vocab_size', 'hidden_size', 'intermediate_size',
+                'encoder_num_heads', 'encoder_num_hidden_layers', 'decoder_num_heads',
+                'decoder_num_hidden_layers',
+            ]
+            for key in pretrained_config_keys:
+                value = getattr(pretrained_bart_config, key)
+                setattr(bart_for_nmt_config, key, value)
+        else:
+            print('Starting training from scratch')
 
     # model, optimizer, lr_scheduler, scaler
-    model = BartForNMT(bart_config)
+    model = BartForNMT(bart_for_nmt_config)
     model.to(device)
     learning_rate = args.learning_rate
     optimizer = utils.make_optimizer(
@@ -232,7 +227,7 @@ def train_model(args: argparse.Namespace):
         src_tokenizer=src_tokenizer,
         target_tokenizer=target_tokenizer,
         args=training_args,
-        bart_config=bart_config,
+        bart_config=bart_for_nmt_config,
         lr_scheduler=lr_scheduler,
         scaler=scaler,
         writer=writer,
