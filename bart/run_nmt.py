@@ -14,7 +14,12 @@ from torch.utils.tensorboard import SummaryWriter
 from bart import opts, utils
 from bart.bilingual_dataset import BilingualDataset, CollatorWithPadding
 from bart.constants import SpecialToken
-from bart.models import BartForNMT, BartForNMTConfig, LayerNormalization
+from bart.models import (
+    BartConfig,
+    BartForNMT,
+    BartForNMTConfig,
+    LayerNormalization,
+)
 from bart.trainer import Trainer, TrainingArguments
 
 
@@ -140,7 +145,7 @@ def train_model(args: argparse.Namespace):
                 if key not in pretrained_checkpoint_states:
                     raise ValueError(f'Missing key "{key}" in checkpoint {args.from_pretrained}')
             pretrained_bart_config = pretrained_checkpoint_states['config']
-            assert isinstance(pretrained_bart_config, BartForNMTConfig)
+            assert isinstance(pretrained_bart_config, BartConfig)
             pretrained_config_keys = [
                 'target_pad_token_id', 'target_start_token_id', 'target_end_token_id',
                 'target_vocab_size', 'hidden_size', 'intermediate_size',
