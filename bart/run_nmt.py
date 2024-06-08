@@ -48,28 +48,32 @@ def run_nmt(args: argparse.Namespace):
     # creating data loaders
     pad_features = ['input_ids', 'labels']
     data_collator = CollatorWithPadding(pad_token_id, pad_features)
+    train_data_loader = None
+    validation_data_loader = None
     test_data_loader = None
-    train_data_loader = utils.make_bilingual_data_loader(
-        raw_dataset['train'],
-        src_tokenizer,
-        target_tokenizer,
-        args.src_seq_length,
-        args.target_seq_length,
-        args.train_batch_size,
-        shuffle=True,
-        pin_memory=True,
-        collate_fn=data_collator,
-    )
-    validation_data_loader = utils.make_bilingual_data_loader(
-        raw_dataset['validation'],
-        src_tokenizer,
-        target_tokenizer,
-        args.src_seq_length,
-        args.target_seq_length,
-        args.eval_batch_size,
-        pin_memory=True,
-        collate_fn=data_collator,
-    )
+    if 'train' in raw_dataset:
+        train_data_loader = utils.make_bilingual_data_loader(
+            raw_dataset['train'],
+            src_tokenizer,
+            target_tokenizer,
+            args.src_seq_length,
+            args.target_seq_length,
+            args.train_batch_size,
+            shuffle=True,
+            pin_memory=True,
+            collate_fn=data_collator,
+        )
+    if 'validation' in raw_dataset:
+        validation_data_loader = utils.make_bilingual_data_loader(
+            raw_dataset['validation'],
+            src_tokenizer,
+            target_tokenizer,
+            args.src_seq_length,
+            args.target_seq_length,
+            args.eval_batch_size,
+            pin_memory=True,
+            collate_fn=data_collator,
+        )
     if 'test' in raw_dataset:
         test_data_loader = utils.make_bilingual_data_loader(
             raw_dataset['test'],
@@ -81,6 +85,16 @@ def run_nmt(args: argparse.Namespace):
             pin_memory=True,
             collate_fn=data_collator,
         )
+    if getattr(args, 'do_test', False):
+        if test_data_loader is None:
+            raise ValueError('`--test-files` is required for testing')
+    else:
+        if train_data_loader is None:
+            raise ValueError('`--train-files` is required for training')
+        if validation_data_loader is None:
+            if test_data_loader is None:
+                raise ValueError('Either `--validation-files` or `--test-files` is required for validating during training')
+            validation_data_loader = test_data_loader
 
     # training device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -167,8 +181,6 @@ def run_nmt(args: argparse.Namespace):
         model.load_state_dict(checkpoint_states['model'])
 
     if getattr(args, 'do_test', False):
-        if test_data_loader is None:
-            raise ValueError('`--test-files` is required for testing')
         test_results = model_utils.eval_model(model, test_data_loader, device)
         test_bleu = compute_dataset_bleu(
             model,
