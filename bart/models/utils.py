@@ -303,6 +303,6 @@ def ensure_num_saved_checkpoints(
     if len(checkpoints) <= limit:
         return
 
-    checkpoints = sorted(checkpoints)
+    checkpoints = sorted(checkpoints, key=lambda x: int(x.split('-')[-1][:-3]))
     for cp in checkpoints[:-limit]:
         os.remove(cp)
