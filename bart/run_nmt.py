@@ -43,7 +43,6 @@ def run_nmt(args: argparse.Namespace):
         seed=args.split_dataset_seed,
         field=args.field,
     )
-    assert 'train' in raw_dataset and 'validation' in raw_dataset
 
     # creating data loaders
     pad_features = ['input_ids', 'labels']

@@ -70,9 +70,8 @@ def _add_dataset_opts(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group('Dataset')
     group.add_argument(
         '--train-files',
-        nargs='+',
+        nargs='*',
         help='List of file for training split',
-        required=True,
         type=str,
     )
     group.add_argument(
@@ -467,7 +466,6 @@ def _add_compute_valid_bleu_opts(parser):
         '--compute-bleu-max-steps',
         help='Maximum steps to compute BLEU',
         type=int,
-        default=200,
     )
 
 def _add_train_tokenizer_opts(parser: argparse.ArgumentParser) -> None:

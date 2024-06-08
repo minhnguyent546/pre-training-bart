@@ -52,8 +52,6 @@ def load_dataset_from_files(
     with size `test_size`/`validation_size` if specified.
     """
     data_files = {name: split for name, split in data_files.items() if split}
-    if 'train' not in data_files:
-        raise ValueError('Training set is required, but not found in `data_files`')
     if data_file_format != 'json':
         kwargs.pop('field', None)
     raw_dataset: datasets.DatasetDict = datasets.load_dataset(
@@ -61,7 +59,7 @@ def load_dataset_from_files(
         data_files=data_files,
         **kwargs,
     )
-    if 'test' not in raw_dataset:
+    if 'train' in raw_dataset and 'test' not in raw_dataset:
         if test_size is not None:
             if test_size > len(raw_dataset['train']):
                 raise ValueError(f'Test size {test_size} is larger than the train set {len(raw_dataset["train"])}')
@@ -70,7 +68,7 @@ def load_dataset_from_files(
                 shuffle=True,
                 seed=seed,
             )
-    if 'validation' not in raw_dataset:
+    if 'train' in raw_dataset and 'validation' not in raw_dataset:
         if validation_size is not None:
             if validation_size > len(raw_dataset['train']):
                 raise ValueError(f'Validation size {validation_size} is larger than the train set {len(raw_dataset["train"])}')
