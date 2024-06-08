@@ -1,18 +1,22 @@
+import math
 import os
 import random
 import re
 import regex
-from typing import Literal
+from typing import Callable, Literal
 import unicodedata
 import yaml
 
 import numpy as np
 
 import datasets
+from tokenizers import Tokenizer
 
 from torch import nn
 import torch
+from torch.utils.data import DataLoader
 
+from bart.bilingual_dataset import BilingualDataset
 from bart.models import BartBase
 
 
@@ -136,6 +140,42 @@ def make_optimizer(
 
     return optimizer
 
+def make_bilingual_data_loader(
+    dataset: datasets.Dataset,
+    src_tokenizer: Tokenizer,
+    target_tokenizer: Tokenizer,
+    src_seq_length: int,
+    target_seq_length: int,
+    batch_size: int,
+    *,
+    source_key: str = 'source',
+    target_key: str = 'target',
+    add_padding_tokens: bool = False,
+    include_source_target_text: bool = False,
+    shuffle: bool = False,
+    pin_memory: bool = False,
+    collate_fn: Callable | None = None,
+) -> DataLoader:
+    bilingual_dataset = BilingualDataset(
+        dataset,
+        src_tokenizer,
+        target_tokenizer,
+        src_seq_length,
+        target_seq_length,
+        source_key=source_key,
+        target_key=target_key,
+        add_padding_tokens=add_padding_tokens,
+        include_source_target_text=include_source_target_text,
+    )
+    bilingual_data_loader = DataLoader(
+        bilingual_dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        pin_memory=pin_memory,
+        collate_fn=collate_fn,
+    )
+    return bilingual_data_loader
+
 def get_param_names(
     module: nn.Module,
     exclude_module_list: tuple[nn.Module, ...] = (),
@@ -164,3 +204,6 @@ def clean_text(text: str, *, strip: bool = True, keep_punct: bool = True) -> str
     if strip:
         text = text.strip()
     return text
+
+def get_perplexity(loss: float) -> float:
+    return math.exp(loss)

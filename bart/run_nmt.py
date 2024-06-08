@@ -5,14 +5,16 @@ Requires: python >= 3.10
 
 import argparse
 
+import pandas as pd
+
 from tokenizers import Tokenizer
 
 import torch
-from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 from bart import opts, utils
-from bart.bilingual_dataset import BilingualDataset, CollatorWithPadding
+from bart.bilingual_dataset import CollatorWithPadding
+from bart.compute_bleu import compute_dataset_bleu
 from bart.constants import SpecialToken
 from bart.models import (
     BartConfig,
@@ -20,10 +22,11 @@ from bart.models import (
     BartForNMTConfig,
     LayerNormalization,
 )
+import bart.models.utils as model_utils
 from bart.trainer import Trainer, TrainingArguments
 
 
-def train_model(args: argparse.Namespace):
+def run_nmt(args: argparse.Namespace):
 
     # loading pre-trained tokenizers
     src_tokenizer: Tokenizer = Tokenizer.from_file(args.src_tokenizer)
@@ -40,48 +43,44 @@ def train_model(args: argparse.Namespace):
         seed=args.split_dataset_seed,
         field=args.field,
     )
-    # TODO: check if raw_dataset contains 'train' and 'test' split
-    assert 'train' in raw_dataset and 'test' in raw_dataset
+    assert 'train' in raw_dataset and 'validation' in raw_dataset
 
     # creating data loaders
-    train_dataset = BilingualDataset(
+    pad_features = ['input_ids', 'labels']
+    data_collator = CollatorWithPadding(pad_token_id, pad_features)
+    test_data_loader = None
+    train_data_loader = utils.make_bilingual_data_loader(
         raw_dataset['train'],
         src_tokenizer,
         target_tokenizer,
         args.src_seq_length,
         args.target_seq_length,
-        source_key='source',
-        target_key='target',
-        add_padding_tokens=False,
-        include_source_target_text=False,
-    )
-    test_dataset = BilingualDataset(
-        raw_dataset['test'],
-        src_tokenizer,
-        target_tokenizer,
-        args.src_seq_length,
-        args.target_seq_length,
-        source_key='source',
-        target_key='target',
-        add_padding_tokens=False,
-        include_source_target_text=False,
-    )
-    pad_features = ['input_ids', 'labels']
-    data_collator = CollatorWithPadding(pad_token_id, pad_features)
-    train_data_loader = DataLoader(
-        train_dataset,
-        batch_size=args.train_batch_size,
+        args.train_batch_size,
         shuffle=True,
         pin_memory=True,
         collate_fn=data_collator,
     )
-    test_data_loader = DataLoader(
-        test_dataset,
-        batch_size=args.eval_batch_size,
-        shuffle=False,
+    validation_data_loader = utils.make_bilingual_data_loader(
+        raw_dataset['validation'],
+        src_tokenizer,
+        target_tokenizer,
+        args.src_seq_length,
+        args.target_seq_length,
+        args.eval_batch_size,
         pin_memory=True,
         collate_fn=data_collator,
     )
+    if 'test' in raw_dataset:
+        test_data_loader = utils.make_bilingual_data_loader(
+            raw_dataset['test'],
+            src_tokenizer,
+            target_tokenizer,
+            args.src_seq_length,
+            args.target_seq_length,
+            args.eval_batch_size,
+            pin_memory=True,
+            collate_fn=data_collator,
+        )
 
     # training device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -161,6 +160,34 @@ def train_model(args: argparse.Namespace):
     # model, optimizer, lr_scheduler, scaler
     model = BartForNMT(bart_for_nmt_config)
     model.to(device)
+
+    if pretrained_checkpoint_states is not None:
+        model.load_state_dict(pretrained_checkpoint_states['model'], strict=False)
+    if checkpoint_states is not None:
+        model.load_state_dict(checkpoint_states['model'])
+
+    if getattr(args, 'do_test', False):
+        if test_data_loader is None:
+            raise ValueError('`--test-files` is required for testing')
+        test_results = model_utils.eval_model(model, test_data_loader, device)
+        test_bleu = compute_dataset_bleu(
+            model,
+            test_data_loader.dataset,
+            src_tokenizer,
+            target_tokenizer,
+            bart_for_nmt_config.target_seq_length,
+            beam_size=args.beam_size,
+            beam_return_topk=args.beam_return_topk,
+            log_sentences=args.log_sentences,
+            logging_interval=args.log_sentences_interval,
+            max_steps=args.compute_bleu_max_steps,
+        )
+        print('*** Test result ***')
+        print(f'Test loss: {test_results["loss"]:.3f}')
+        print(f'Test BLEU: {test_bleu:.3f}')
+        print(f'Test perplexity: {utils.get_perplexity(test_results["loss"]):.3f}')
+        return
+
     learning_rate = args.learning_rate
     optimizer = utils.make_optimizer(
         model,
@@ -181,10 +208,7 @@ def train_model(args: argparse.Namespace):
 
     initial_global_step = 0
     initial_accum_train_loss = 0.0
-    if pretrained_checkpoint_states is not None:
-        model.load_state_dict(pretrained_checkpoint_states['model'], strict=False)
     if checkpoint_states is not None:
-        model.load_state_dict(checkpoint_states['model'])
         optimizer.load_state_dict(checkpoint_states['optimizer'])
         lr_scheduler.load_state_dict(checkpoint_states['lr_scheduler'])
         scaler.load_state_dict(checkpoint_states['scaler'])
@@ -238,7 +262,7 @@ def train_model(args: argparse.Namespace):
         writer=writer,
     )
     print(f'Model has {model.num_params()} parameters')
-    trainer.train(train_data_loader, test_data_loader)
+    trainer.train(train_data_loader, validation_data_loader)
 
 def main():
     parser = argparse.ArgumentParser(
@@ -249,7 +273,7 @@ def main():
     args = parser.parse_args()
 
     utils.set_random_seed(args.seed)
-    train_model(args)
+    run_nmt(args)
 
 
 if __name__ == '__main__':

@@ -20,14 +20,14 @@ def pretrain_opts(parser):
 
 def fine_tune_nmt_opts(parser):
     """All options used in fine-tuning nmt"""
-    _add_general_opts(parser)
+    _add_general_opts(parser, has_do_test=True)
     _add_dataset_opts(parser)
     _add_model_opts(parser)
     _add_training_opts(parser)
     _add_fine_tune_nmt_opts(parser)
     _add_compute_valid_bleu_opts(parser)
 
-def _add_general_opts(parser: argparse.ArgumentParser) -> None:
+def _add_general_opts(parser: argparse.ArgumentParser, has_do_test: bool = False) -> None:
     group = parser.add_argument_group('General options')
     group.add_argument(
         '--checkpoints-dir',
@@ -59,6 +59,12 @@ def _add_general_opts(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=1061109567,
     )
+    if has_do_test:
+        group.add_argument(
+            '--do-test',
+            help='Whether to test the model',
+            action='store_true',
+        )
 
 def _add_dataset_opts(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group('Dataset')
