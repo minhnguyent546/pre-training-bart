@@ -27,6 +27,7 @@ class TrainingArguments():
     train_batch_size: int = 32
     eval_batch_size: int = 32
     fp16: bool = False
+    use_cache: bool = False
     label_smoothing: float = 0.0
     max_grad_norm: float = 0.0
     initial_global_step: int = 0
@@ -91,12 +92,18 @@ class Trainer:
                 input_mask = None
                 decoder_input_ids = None
                 decoder_input_mask = None
-                if 'input_mask' in batch:
-                    input_mask = batch['input_mask'].to(self.device).type(torch.int32)
                 if 'decoder_input_ids' in batch:
                     decoder_input_ids = batch['decoder_input_ids'].to(self.device).type(torch.int32)
+
+                if 'input_mask' in batch:
+                    input_mask = batch['input_mask'].to(self.device).type(torch.bool)
+                else:
+                    input_mask = input_ids != self.model.config.src_pad_token_id
+
                 if 'decoder_input_mask' in batch:
-                    decoder_input_mask = batch['decoder_input_mask'].to(self.device).type(torch.int32)
+                    decoder_input_mask = batch['decoder_input_mask'].to(self.device).type(torch.bool)
+                elif decoder_input_ids is not None:
+                    decoder_input_mask = decoder_input_ids != self.model.target_pad_token_id
 
                 self.optimizer.zero_grad()
 
@@ -163,6 +170,7 @@ class Trainer:
             self.bart_config.target_seq_length,
             beam_size=self.args.beam_size,
             beam_return_topk=self.args.beam_return_topk,
+            use_cache=self.args.use_cache,
             log_sentences=self.args.log_sentences,
             logging_interval=self.args.log_sentences_interval,
             max_steps=self.args.compute_bleu_max_steps,
