@@ -148,6 +148,7 @@ def train_model(args: argparse.Namespace):
         train_batch_size=args.train_batch_size,
         eval_batch_size=args.eval_batch_size,
         fp16=args.fp16,
+        use_cache=args.use_cache,
         label_smoothing=args.label_smoothing,
         max_grad_norm=args.max_grad_norm,
         initial_global_step=initial_global_step,

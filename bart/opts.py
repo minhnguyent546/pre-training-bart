@@ -375,6 +375,11 @@ def _add_training_opts(parser: argparse.ArgumentParser) -> None:
         action='store_true',
     )
     group.add_argument(
+        '--use-cache',
+        help='Whether to use kv cache during inference',
+        action='store_true',
+    )
+    group.add_argument(
         '--label-smoothing',
         help='Label smoothing value for cross entropy loss',
         type=float,

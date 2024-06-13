@@ -21,6 +21,7 @@ def compute_dataset_bleu(
     seq_length: int,
     beam_size: int | None = None,
     beam_return_topk: int = 1,
+    use_cache: bool = False,
     log_sentences: bool = False,
     logging_interval: int = 20,
     max_steps: int | None = None,
@@ -57,9 +58,10 @@ def compute_dataset_bleu(
         # labels has form of   : ... </s> [PAD] [PAD]...
         input_ids = Tensor(item['input_ids']).type(torch.int32)
         labels = Tensor(item['labels']).type(torch.int64)
-        input_mask = None
         if 'input_mask' in item:
-            input_mask = Tensor(item['input_mask']).type(torch.int32)
+            input_mask = Tensor(item['input_mask']).type(torch.bool)
+        else:
+            input_mask = input_ids != model.config.src_pad_token_id
 
         # retrieving source and target text
         if 'source_text' in item:
@@ -102,10 +104,10 @@ def compute_dataset_bleu(
                 device,
                 beam_size,
                 input_ids,
-                target_tokenizer,
                 seq_length,
                 return_topk=beam_return_topk,
                 encoder_attn_mask=input_mask,
+                use_cache=use_cache,
             )
             cand_list = [cand.detach().cpu().numpy() for cand in cand_list]
             cand_text_list = []
@@ -119,9 +121,9 @@ def compute_dataset_bleu(
                 model,
                 device,
                 input_ids,
-                target_tokenizer,
                 seq_length,
                 input_mask,
+                use_cache=use_cache,
             )
             pred_token_ids = pred_token_ids.detach().cpu().numpy()
 

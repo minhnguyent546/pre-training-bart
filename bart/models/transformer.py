@@ -4,6 +4,7 @@ A standard transformer model as in Vaswani et al. (2017).
 
 from dataclasses import dataclass
 import math
+from typing import TypeAlias
 
 from torch import Tensor
 from torch import nn
@@ -13,6 +14,8 @@ from torch.nn import functional as F
 import bart.models.utils as model_utils
 from bart.models.utils import initialize_bert_params_fn
 
+
+KvCacheType: TypeAlias = tuple[Tensor, Tensor, Tensor, Tensor]
 
 @dataclass
 class TransformerConfig:
@@ -44,6 +47,7 @@ class TransformerConfig:
 class TransformerOutput:
     encoder_output: Tensor
     decoder_output: Tensor | None = None
+    kv_caches: tuple[KvCacheType, ...] | None = None
 
 class LayerNormalization(nn.Module):
     def __init__(self, features: int, eps: float = 1e-7):
@@ -78,15 +82,17 @@ class PositionEmbeddings(nn.Module):
     def __init__(self, hidden_size: int, max_postition_embeddings: int):
         super().__init__()
         self.position_embeddings = nn.Embedding(max_postition_embeddings, hidden_size)
-        self.register_buffer(
-            'position_ids',
-            torch.arange(0, max_postition_embeddings),
-        )
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, cached_kv_length: int = 0) -> Tensor:
+        # when `cached_kv_length` > 0, seq_length most likely will be 1
         batch_size, seq_length = x.shape[:2]
-        position_ids = self.position_ids[:seq_length]
-        embeddings = self.position_embeddings(position_ids)
+        positions = torch.arange(
+            cached_kv_length,
+            cached_kv_length + seq_length,
+            device=x.device,
+            dtype=torch.int32,
+        ).expand(batch_size, -1)  # (batch_size, seq_length)
+        embeddings = self.position_embeddings(positions)  # (batch_size, seq_length, hidden_size)
         return embeddings
 
 class FeedForward(nn.Module):
@@ -117,6 +123,7 @@ class MultiHeadAttention(nn.Module):
         hidden_size: int,
         num_heads: int,
         attn_dropout: float,
+        is_decoder: bool = False,
     ):
         super().__init__()
         if not hidden_size % num_heads == 0:
@@ -127,47 +134,63 @@ class MultiHeadAttention(nn.Module):
 
         self.hidden_size = hidden_size
         self.num_heads = num_heads
-        self.d_k = hidden_size // num_heads
+        self.head_dim = hidden_size // num_heads
         self.attn_dropout = attn_dropout
+        self.is_decoder = is_decoder
         self.w_q = nn.Linear(hidden_size, hidden_size)
         self.w_k = nn.Linear(hidden_size, hidden_size)
         self.w_v = nn.Linear(hidden_size, hidden_size)
         self.w_o = nn.Linear(hidden_size, hidden_size)
 
     def forward(
-        self, x: Tensor,
-        kv_tensor: Tensor | None = None,
+        self,
+        x: Tensor,
+        kv_states: Tensor | None = None,
+        kv_cache: tuple[Tensor, Tensor] | None = None,
         attn_mask: Tensor | None = None,
-    ) -> Tensor:
-        """if `kv_tensor` is not `None`, then it is used as key and value tensors (cross attention)"""
-        batch_size, seq_length = x.shape[:2]
-        is_cross_attention = kv_tensor is not None
+    ) -> tuple[Tensor, tuple[Tensor, Tensor] | None]:
+        """if `kv_states` is passed, then it will used as key and value tensors (cross attention)"""
+        batch_size = x.shape[0]
+        is_cross_attention = kv_states is not None
 
-        query = self.w_q(x)
-        if is_cross_attention:
+        query = self._reshape_for_mha(self.w_q(x), batch_size)
+        if is_cross_attention and kv_cache is not None:
+            # cross attention with cache
+            # check if seq_lengths are equal
+            assert kv_cache[0].shape[2] == kv_states.shape[1]
+            key, value = kv_cache
+        elif is_cross_attention:
             # cross-attention
-            key = self.w_k(kv_tensor)
-            value = self.w_v(kv_tensor)
+            key = self._reshape_for_mha(self.w_k(kv_states), batch_size)
+            value = self._reshape_for_mha(self.w_v(kv_states), batch_size)
+        elif kv_cache is not None:
+            # self-attention with cache
+            cur_key = self._reshape_for_mha(self.w_k(x), batch_size)
+            cur_value = self._reshape_for_mha(self.w_v(x), batch_size)
+            key = torch.cat([kv_cache[0], cur_key], dim=2)
+            value = torch.cat([kv_cache[1], cur_value], dim=2)
         else:
             # self-attention
-            key = self.w_k(x)
-            value = self.w_v(x)
+            key = self._reshape_for_mha(self.w_k(x), batch_size)
+            value = self._reshape_for_mha(self.w_v(x), batch_size)
 
-        # query, key, value: (batch_size, seq_length, hidden_size) -> (batch_size, num_heads, seq_length, d_k)
-        query = query.view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
-        key = key.view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
-        value = value.view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        if self.is_decoder:
+            # kv_cache is always `None` in encoder
+            kv_cache = (key, value)
 
-        y = scaled_dot_product_attention(
+        output = scaled_dot_product_attention(
             query,
             key,
             value,
             attn_mask=attn_mask,
             attn_dropout=self.attn_dropout,
         )
-        y = y.transpose(1, 2).contiguous().view(batch_size, -1, self.hidden_size)
-        y = self.w_o(y)
-        return y
+        output = output.transpose(1, 2).contiguous().view(batch_size, -1, self.hidden_size)
+        output = self.w_o(output)
+        return output, kv_cache
+
+    def _reshape_for_mha(self, x: Tensor, batch_size: int, seq_length: int = -1) -> Tensor:
+        return x.view(batch_size, seq_length, self.num_heads, self.head_dim).transpose(1, 2)
 
 class TransformerEncoderLayer(nn.Module):
     def __init__(
@@ -202,7 +225,7 @@ class TransformerEncoderLayer(nn.Module):
     def forward(self, x: Tensor, attn_mask: Tensor | None = None) -> Tensor:
         residual = x
         x = self._maybe_layer_norm(x, 0, is_before=True)
-        x = self.self_attention(x, attn_mask=attn_mask)
+        x, _ = self.self_attention(x, attn_mask=attn_mask)
         x = residual + self.dropout(x)
         x = self._maybe_layer_norm(x, 0)
 
@@ -240,11 +263,13 @@ class TransformerDecoderLayer(nn.Module):
             hidden_size,
             num_heads,
             attn_dropout,
+            is_decoder=True,
         )
         self.cross_attention = MultiHeadAttention(
             hidden_size,
             num_heads,
             attn_dropout,
+            is_decoder=True,
         )
         self.feed_forward = FeedForward(
             hidden_size,
@@ -265,16 +290,29 @@ class TransformerDecoderLayer(nn.Module):
         encoder_output: Tensor,
         attn_mask: Tensor | None = None,
         encoder_attn_mask: Tensor | None = None,
-    ) -> Tensor:
+        kv_cache: KvCacheType | None = None,
+        use_cache: bool = False,
+    ) -> tuple[Tensor, Tensor | None]:
+        self_attn_kv_cache = kv_cache[:2] if kv_cache is not None else None
         residual = x
         x = self._maybe_layer_norm(x, 0, is_before=True)
-        x = self.masked_self_attention(x, attn_mask=attn_mask)
+        x, new_self_attn_kv_cache = self.masked_self_attention(
+            x,
+            kv_cache=self_attn_kv_cache,
+            attn_mask=attn_mask,
+        )
         x = residual + self.dropout(x)
         x = self._maybe_layer_norm(x, 0)
 
+        cross_attn_kv_cache = kv_cache[-2:] if kv_cache is not None else None
         residual = x
         x = self._maybe_layer_norm(x, 1, is_before=True)
-        x = self.cross_attention(x, kv_tensor=encoder_output, attn_mask=encoder_attn_mask)
+        x, new_cross_attn_kv_cache = self.cross_attention(
+            x,
+            kv_states=encoder_output,
+            kv_cache=cross_attn_kv_cache,
+            attn_mask=encoder_attn_mask,
+        )
         x = residual + self.dropout(x)
         x = self._maybe_layer_norm(x, 1)
 
@@ -283,7 +321,13 @@ class TransformerDecoderLayer(nn.Module):
         x = self.feed_forward(x)
         x = residual + self.dropout(x)
         x = self._maybe_layer_norm(x, 2)
-        return x
+
+        new_kv_cache = None
+        if use_cache:
+            assert new_self_attn_kv_cache is not None
+            assert new_cross_attn_kv_cache is not None
+            new_kv_cache = new_self_attn_kv_cache + new_cross_attn_kv_cache
+        return x, new_kv_cache
 
     def _maybe_layer_norm(
         self,
@@ -323,15 +367,23 @@ class TransformerEncoder(nn.Module):
             self.layer_norm = LayerNormalization(config.hidden_size)
 
     def forward(self, x: Tensor, attn_mask: Tensor | None = None, embed_tokens: bool = True) -> Tensor:
+        if attn_mask is not None:
+            attn_mask = model_utils.create_encoder_4d_attn_mask(attn_mask, x.shape[:2])
+
         # embed tokens and positions
         if embed_tokens:
             assert hasattr(self, 'token_embeddings')
             x = self.token_embeddings(x)
+        else:
+            assert x.dim() == 3
         x = x + self.position_embeddings(x)
         x = self.dropout(x)
 
+        # pass through encoder layers
         for layer in self.layers:
             x = layer(x, attn_mask=attn_mask)
+
+        # additional layer norm if we use pre-norm
         if self.pre_norm:
             x = self.layer_norm(x)
         return x
@@ -370,21 +422,48 @@ class TransformerDecoder(nn.Module):
         encoder_output: Tensor,
         attn_mask: Tensor | None = None,
         encoder_attn_mask: Tensor | None = None,
-    ) -> Tensor:
+        kv_caches: tuple[KvCacheType, ...] | None = None,
+        use_cache: bool = False,
+    ) -> tuple[Tensor, tuple[KvCacheType] | None]:
+        cached_kv_length = kv_caches[0][0].shape[2] if kv_caches is not None else 0
+
+        attn_mask = model_utils.create_decoder_4d_causal_attn_mask(
+            attn_mask,
+            x.shape,
+            cached_kv_length=cached_kv_length,
+            device=x.device,
+        )
+        if encoder_attn_mask is not None:
+            encoder_attn_mask = model_utils.create_encoder_4d_attn_mask(
+                encoder_attn_mask,
+                encoder_output.shape[:2],
+                target_seq_length=x.shape[1],
+            )
+
         # embed tokens and positions
-        x = self.token_embeddings(x) + self.position_embeddings(x)
+        x = self.token_embeddings(x) + self.position_embeddings(x, cached_kv_length=cached_kv_length)
         x = self.dropout(x)
 
-        for layer in self.layers:
-            x = layer(
+        # pass through decoder layers
+        next_kv_caches = () if use_cache else None
+        for idx, layer in enumerate(self.layers):
+            kv_cache = kv_caches[idx] if kv_caches is not None else None
+            x, new_kv_cache = layer(
                 x,
                 encoder_output=encoder_output,
                 attn_mask=attn_mask,
                 encoder_attn_mask=encoder_attn_mask,
+                kv_cache=kv_cache,
+                use_cache=use_cache,
             )
+            if use_cache:
+                assert new_kv_cache is not None
+                next_kv_caches += (new_kv_cache,)
+
+        # additional layer norm if we use pre-norm
         if self.pre_norm:
             x = self.layer_norm(x)
-        return x
+        return x, next_kv_caches
 
 class TransformerBase(nn.Module):
     def _tie_weights(self):
@@ -428,32 +507,32 @@ class Transformer(TransformerBase):
         encoder_attn_mask: Tensor | None = None,
         decoder_attn_mask: Tensor | None = None,
         encoder_output: Tensor | None = None,
+        kv_caches: tuple[KvCacheType, ...] | None = None,
+        use_cache: bool = False,
     ) -> TransformerOutput:
+        if self.training:
+            use_cache = False
         if encoder_output is None:
             if encoder_input_ids is None:
                 raise ValueError('If `encoder_output` is not passed, `encoder_input_ids` can not be `None`')
-            if encoder_attn_mask is None:
-                encoder_attn_mask = encoder_input_ids != self.config.src_pad_token_id
-            if encoder_attn_mask.dim() == 2:
-                encoder_attn_mask = model_utils.create_encoder_4d_attn_mask(encoder_input_ids, encoder_attn_mask)
             encoder_output = self.encoder(encoder_input_ids, attn_mask=encoder_attn_mask)
 
         assert encoder_output is not None
         decoder_output = None
+        new_kv_caches = None
         if decoder_input_ids is not None:
-            if decoder_attn_mask is None:
-                decoder_attn_mask = decoder_input_ids != self.config.target_pad_token_id
-            if decoder_attn_mask.dim() == 2:
-                decoder_attn_mask = model_utils.create_decoder_4d_attn_causal_mask(decoder_input_ids, decoder_attn_mask)
-            decoder_output = self.decoder(
+            decoder_output, new_kv_caches = self.decoder(
                 decoder_input_ids,
                 encoder_output=encoder_output,
                 attn_mask=decoder_attn_mask,
                 encoder_attn_mask=encoder_attn_mask,
+                kv_caches=kv_caches,
+                use_cache=use_cache,
             )
         return TransformerOutput(
             encoder_output=encoder_output,
             decoder_output=decoder_output,
+            kv_caches=new_kv_caches,
         )
 
 def scaled_dot_product_attention(
@@ -464,10 +543,12 @@ def scaled_dot_product_attention(
     attn_dropout: float | nn.Dropout | None = None,
 ) -> Tensor:
     if attn_mask is not None and attn_mask.dim() != 4:
-        raise ValueError(f'Expected attn_mask is a 4D tensor, got a tensor with shape: {attn_mask.size()}')
+        raise ValueError(
+            f'Expected attn_mask is a 4D tensor, got a tensor with shape: {tuple(attn_mask.shape)}'
+        )
 
-    d_k = query.size(-1)
-    attention_probs = (query @ key.transpose(-2, -1)) / math.sqrt(d_k)
+    head_dim = query.size(-1)
+    attention_probs = (query @ key.transpose(-2, -1)) / math.sqrt(head_dim)
     if attn_mask is not None:
         attention_probs.masked_fill_(attn_mask == False, float('-inf'))
 

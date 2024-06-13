@@ -1,19 +1,17 @@
 """BART model"""
 
 from dataclasses import dataclass
-import math
 
 from torch import Tensor
 from torch import nn
 import torch.nn.functional as F
 
 from bart.models.transformer import (
-    InputEmbeddings,
-    LayerNormalization,
-    PositionEmbeddings,
+    KvCacheType,
     Transformer,
     TransformerBase,
     TransformerConfig,
+    TransformerEncoder,
     TransformerEncoderLayer,
     TransformerOutput,
 )
@@ -32,9 +30,7 @@ class BartForNMTConfig(BartConfig):
     foreign_encoder_num_heads: int = 8
 
 @dataclass
-class BartForGenerationOutput:
-    encoder_output: Tensor
-    decoder_output: Tensor | None = None
+class BartForGenerationOutput(TransformerOutput):
     lm_logits: Tensor | None = None
     lm_loss: Tensor | None = None
 
@@ -52,13 +48,17 @@ class Bart(Transformer):
         encoder_attn_mask: Tensor | None = None,
         decoder_attn_mask: Tensor | None = None,
         encoder_output: Tensor | None = None,
+        kv_caches: tuple[KvCacheType, ...] | None = None,
+        use_cache: bool = False,
     ) -> TransformerOutput:
         outputs = super().forward(
-            encoder_input_ids,
+            encoder_input_ids=encoder_input_ids,
             decoder_input_ids=decoder_input_ids,
             encoder_attn_mask=encoder_attn_mask,
             decoder_attn_mask=decoder_attn_mask,
             encoder_output=encoder_output,
+            kv_caches=kv_caches,
+            use_cache=use_cache,
         )
         return outputs
 
@@ -89,17 +89,10 @@ class BartClassificationHead(nn.Module):
         output = self.proj(output)
         return output
 
-class BertEncoderForForeignLanguage(nn.Module):
+class BertEncoderForForeignLanguage(TransformerEncoder):
     """A small additional encoder that replaces the input embeddings in BERT."""
     def __init__(self, config: BartForNMTConfig):
-        super().__init__()
-        self.token_embeddings = InputEmbeddings(
-            config.src_vocab_size,
-            config.hidden_size,
-            scale_factor=math.sqrt(config.hidden_size),
-        )
-        self.position_embeddings = PositionEmbeddings(config.hidden_size, config.max_position_embeddings)
-        self.dropout = nn.Dropout(config.dropout)
+        super().__init__(config)
         self.layers = nn.ModuleList([
             TransformerEncoderLayer(
                 config.hidden_size,
@@ -112,20 +105,14 @@ class BertEncoderForForeignLanguage(nn.Module):
             )
             for _ in range(config.foreign_encoder_num_layers)
         ])
-        self.pre_norm = config.pre_norm
-        if self.pre_norm:
-            self.layer_norm = LayerNormalization(config.hidden_size)
 
-    def forward(self, x: Tensor, attn_mask: Tensor | None = None) -> Tensor:
-        # embed tokens and positions
-        x = self.token_embeddings(x) + self.position_embeddings(x)
-        x = self.dropout(x)
-
-        for layer in self.layers:
-            x = layer(x, attn_mask=attn_mask)
-        if self.pre_norm:
-            x = self.layer_norm(x)
-        return x
+    def forward(
+        self,
+        x: Tensor,
+        attn_mask: Tensor | None = None,
+        embed_tokens: bool = True
+    ) -> Tensor:
+        return super().forward(x, attn_mask=attn_mask, embed_tokens=embed_tokens)
 
 class BartForGeneration(BartBase):
     """Bart for text generation tasks (really like transformer).
@@ -164,6 +151,8 @@ class BartForGeneration(BartBase):
         decoder_attn_mask: Tensor | None = None,
         encoder_output: Tensor | None = None,
         labels: Tensor | None = None,
+        kv_caches: tuple[KvCacheType, ...] | None = None,
+        use_cache: bool = False,
         label_smoothing: float = 0.0,
     ) -> BartForGenerationOutput:
         """
@@ -182,16 +171,21 @@ class BartForGeneration(BartBase):
             encoder_attn_mask=encoder_attn_mask,
             decoder_attn_mask=decoder_attn_mask,
             encoder_output=encoder_output,
+            kv_caches=kv_caches,
+            use_cache=use_cache,
         )  # (batch_size, seq_length, hidden_size)
 
-        lm_logits = self.lm_head(outputs.decoder_output)
+        lm_logits = None
         lm_loss = None
-        if labels is not None:
+        if outputs.decoder_output is not None:
+            lm_logits = self.lm_head(outputs.decoder_output)
+        if labels is not None and lm_logits is not None:
             lm_loss = self.get_lm_loss(lm_logits, labels=labels, label_smoothing=label_smoothing)
 
         return BartForGenerationOutput(
             encoder_output=outputs.encoder_output,
             decoder_output=outputs.decoder_output,
+            kv_caches=outputs.kv_caches,
             lm_logits=lm_logits,
             lm_loss=lm_loss,
         )
@@ -250,12 +244,16 @@ class BartForNMT(BartBase):
         decoder_attn_mask: Tensor | None = None,
         encoder_output: Tensor | None = None,
         labels: Tensor | None = None,
+        kv_caches: tuple[KvCacheType, ...] | None = None,
+        use_cache: bool = False,
         label_smoothing: float = 0.0,
     ) -> BartForGenerationOutput:
         """
         Note that in Bart, if `decoder_input_ids` is not provided,
         it will be inferred from `labels` if `labels` is not `None`.
         """
+        if self.training:
+            use_cache = False
         if decoder_input_ids is None and labels is not None:
             decoder_input_ids = model_utils.shift_tokens_right(labels, self.config.target_start_token_id)
 
@@ -265,10 +263,6 @@ class BartForNMT(BartBase):
         if encoder_output is None:
             if encoder_input_ids is None:
                 raise ValueError('If `encoder_output` is not passed, `encoder_input_ids` can not be `None`')
-            if encoder_attn_mask is None:
-                encoder_attn_mask = encoder_input_ids != self.config.src_pad_token_id
-            if encoder_attn_mask.dim() == 2:
-                encoder_attn_mask = model_utils.create_encoder_4d_attn_mask(encoder_input_ids, encoder_attn_mask)
             foreign_encoder_output = self.foreign_encoder(
                 encoder_input_ids,
                 attn_mask=encoder_attn_mask,
@@ -281,26 +275,27 @@ class BartForNMT(BartBase):
 
         assert encoder_output is not None
         decoder_output = None
+        new_kv_caches = None
         if decoder_input_ids is not None:
-            if decoder_attn_mask is None:
-                decoder_attn_mask = decoder_input_ids != self.config.target_pad_token_id
-            if decoder_attn_mask.dim() == 2:
-                decoder_attn_mask = model_utils.create_decoder_4d_attn_causal_mask(decoder_input_ids, decoder_attn_mask)
-            decoder_output = self.model.decoder(
+            decoder_output, new_kv_caches = self.model.decoder(
                 decoder_input_ids,
                 encoder_output=encoder_output,
                 attn_mask=decoder_attn_mask,
                 encoder_attn_mask=encoder_attn_mask,
+                kv_caches=kv_caches,
+                use_cache=use_cache,
             )
-
-        lm_logits = self.lm_head(decoder_output)
+        lm_logits = None
         lm_loss = None
-        if labels is not None:
+        if decoder_output is not None:
+            lm_logits = self.lm_head(decoder_output)
+        if labels is not None and lm_logits is not None:
             lm_loss = self.get_lm_loss(lm_logits, labels=labels, label_smoothing=label_smoothing)
 
         return BartForGenerationOutput(
             encoder_output=encoder_output,
             decoder_output=decoder_output,
+            kv_caches=new_kv_caches,
             lm_logits=lm_logits,
             lm_loss=lm_loss,
         )

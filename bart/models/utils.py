@@ -1,4 +1,5 @@
 import glob
+from operator import itemgetter
 import os
 
 from tqdm.autonotebook import tqdm
@@ -59,29 +60,76 @@ def unfreeze_parameters(model: nn.Module, freezed_params: list[str]) -> None:
         if name in freezed_params:
             param.requires_grad = True
 
-def create_encoder_4d_attn_mask(input_ids: Tensor, attn_mask: Tensor) -> Tensor:
-    if attn_mask.shape != input_ids.shape:
+def create_encoder_4d_attn_mask(
+    attn_mask: Tensor,
+    input_shape: torch.Size | tuple[int, ...] | list[int],
+    target_seq_length: int | None = None,
+) -> Tensor:
+    batch_size, src_seq_length = input_shape
+    if target_seq_length is None:
+        target_seq_length = src_seq_length
+    if attn_mask.dim() == 4:
+        expected_shape = (batch_size, 1, target_seq_length, src_seq_length)
+        if tuple(attn_mask.shape) != expected_shape:
+            raise ValueError(
+                f'Expected `attn_mask` has shape {expected_shape}, '
+                f'but got {tuple(attn_mask.shape)}'
+            )
+    elif attn_mask.dim() == 2:
+        if tuple(attn_mask.shape) != input_shape:
+            raise ValueError(
+                f'`attn_mask` must have shape {input_shape} in order to expand it to 4D, '
+                f'but got {tuple(attn_mask.shape)}'
+            )
+        # (batch_size, src_seq_length) -> (batch_size, 1, target_seq_length, src_seq_length)
+        attn_mask = attn_mask.unsqueeze(1).unsqueeze(2)  # (batch_size, 1, 1, src_seq_length)
+        attn_mask = attn_mask.expand(batch_size, 1, target_seq_length, src_seq_length)
+    else:
         raise ValueError(
-            'Expected input_ids and attn_mask have the same shape, '
-            f'got {input_ids.shape} and {attn_mask.shape}'
+            'Expected `attn_mask` to have 2 or 4 dimensions, '
+            f'but got a tensor with shape: {tuple(attn_mask.shape)}'
         )
-    attn_mask = attn_mask.unsqueeze(1).unsqueeze(2)
     return attn_mask
 
-def create_decoder_4d_attn_causal_mask(
-    decoder_input_ids: Tensor,
-    decoder_attn_mask: Tensor,
+def create_decoder_4d_causal_attn_mask(
+    attn_mask: Tensor | None,
+    input_shape: torch.Size | tuple[int, ...] | list[int],
+    device: torch.device = torch.device('cpu'),
+    cached_kv_length: int = 0,
 ) -> Tensor:
-    if decoder_attn_mask.shape != decoder_input_ids.shape:
-        raise ValueError(
-            'Expected decoder_input_ids and decoder_attn_mask have the same shape, '
-            f'got {decoder_input_ids.shape} and {decoder_attn_mask.shape}'
-        )
-    seq_length = decoder_input_ids.shape[1]
-    causal_mask = create_causal_mask(seq_length).to(decoder_attn_mask.device)
-    decoder_attn_mask = decoder_attn_mask.unsqueeze(1).unsqueeze(2)
-    decoder_attn_causal_mask = decoder_attn_mask & causal_mask
-    return decoder_attn_causal_mask
+    batch_size, query_length = input_shape
+    kv_length = query_length + cached_kv_length
+    if attn_mask is not None:
+        if attn_mask.dim() == 4:
+            expected_shape = (batch_size, 1, query_length, kv_length)
+            if tuple(attn_mask.shape) != expected_shape:
+                raise ValueError(
+                    f'Expected `attn_mask` has shape {expected_shape}, '
+                    f'but got {tuple(attn_mask.shape)}'
+                )
+        elif attn_mask.dim() == 2:
+            if cached_kv_length > 0:
+                attn_mask = torch.cat([
+                    torch.ones((batch_size, cached_kv_length), dtype=torch.bool, device=device),
+                    attn_mask,
+                ], dim=-1)
+            attn_mask = attn_mask.unsqueeze(1).unsqueeze(2)  # (batch_size, 1, 1, kv_length)
+            attn_mask = attn_mask.expand(batch_size, 1, query_length, kv_length)  # (batch_size, 1, query_length, kv_length)
+        else:
+            raise ValueError(
+                'Expected `attn_mask` to have 2 or 4 dimensions, '
+                f'but got a tensor with shape: {tuple(attn_mask.shape)}'
+            )
+    else:
+        attn_mask = create_causal_mask(query_length).to(device)  # (query_length, query_length)
+        if cached_kv_length > 0:
+            attn_mask = torch.cat([
+                torch.ones((query_length, cached_kv_length), dtype=torch.bool, device=device),
+                attn_mask,
+            ], dim=-1)
+        attn_mask = attn_mask.unsqueeze(0).unsqueeze(1)  # (1, 1, query_length, kv_length)
+        attn_mask = attn_mask.expand(batch_size, 1, query_length, kv_length)  # (batch_size, 1, query_length, kv_length)
+    return attn_mask
 
 def create_causal_mask(seq_length: int) -> Tensor:
     return torch.tril(torch.ones(seq_length, seq_length)).bool()
@@ -100,15 +148,20 @@ def eval_model(
         for batch in batch_iter:
             input_ids = batch['input_ids'].to(device).type(torch.int32)
             labels = batch['labels'].to(device).type(torch.int64)
-            input_mask = None
             decoder_input_ids = None
             decoder_input_mask = None
-            if 'input_mask' in batch:
-                input_mask = batch['input_mask'].to(device).type(torch.int32)
             if 'decoder_input_ids' in batch:
                 decoder_input_ids = batch['decoder_input_ids'].to(device).type(torch.int32)
+
+            if 'input_mask' in batch:
+                input_mask = batch['input_mask'].to(device).type(torch.bool)
+            else:
+                input_mask = input_ids != model.config.src_pad_token_id
+
             if 'decoder_input_mask' in batch:
-                decoder_input_mask = batch['decoder_input_mask'].to(device).type(torch.int32)
+                decoder_input_mask = batch['decoder_input_mask'].to(device).type(torch.bool)
+            elif decoder_input_ids is not None:
+                decoder_input_mask = decoder_input_ids != model.config.target_pad_token_id
 
             outputs = model(
                 encoder_input_ids=input_ids,
@@ -134,48 +187,47 @@ def greedy_search_decode(
     model,
     device: torch.device,
     encoder_input_ids: Tensor,
-    target_tokenizer: Tokenizer,
     max_seq_length: int,
     encoder_attn_mask: Tensor | None = None,
+    use_cache: bool = False,
 ) -> Tensor:
     """
     Args:
         model: model to be used for decoding
         device (torch.device): training device
         encoder_input_ids (Tensor): encoder input ids, shape ``(src_seq_length,)``
-        target_tokenizer (Tokenizer): target tokenizer
         max_seq_length (int): maximum sequence length
         encoder_attn_mask (Tensor | None): attention mask for encoder input, shape ``(src_seq_length,)`` (default: None)
+        use_cache (bool): Whether to use kv cache during decoding (defalt: False)
 
     Returns:
         Tensor: tensor of predicted token ids
     """
-
-    sos_token_id = target_tokenizer.token_to_id(SpecialToken.SOS)
-    eos_token_id = target_tokenizer.token_to_id(SpecialToken.EOS)
+    sos_token_id = model.config.target_start_token_id
+    eos_token_id = model.config.target_end_token_id
 
     encoder_input_ids = encoder_input_ids.unsqueeze(0).to(device)
     if encoder_attn_mask is not None:
         encoder_attn_mask = encoder_attn_mask.unsqueeze(0).to(device)
-        encoder_attn_mask = create_encoder_4d_attn_mask(encoder_input_ids, encoder_attn_mask)
+
     encoder_output = None
-    causal_mask = create_causal_mask(max_seq_length).to(device).unsqueeze(0).unsqueeze(0)  # (1, 1, max_seq_length, max_seq_length)
+    kv_caches = None
 
     # initialize decoder input which contains only [SOS] token
     decoder_input_ids = torch.empty((1, 1)).fill_(sos_token_id).type_as(encoder_input_ids).to(device)
     for _ in range(max_seq_length):
-        # create mask for decoder input
-        decoder_attn_mask = causal_mask[..., :decoder_input_ids.size(1), :decoder_input_ids.size(1)]
-
+        cur_input_ids = decoder_input_ids[:, [-1]] if use_cache else decoder_input_ids
         outputs = model(
             encoder_input_ids=encoder_input_ids,
-            decoder_input_ids=decoder_input_ids,
+            decoder_input_ids=cur_input_ids,
             encoder_attn_mask=encoder_attn_mask,
-            decoder_attn_mask=decoder_attn_mask,
             encoder_output=encoder_output,
+            kv_caches=kv_caches,
+            use_cache=use_cache,
         )
         if encoder_output is None:
             encoder_output = outputs.encoder_output
+        kv_caches = outputs.kv_caches
 
         # get token with highest probability
         logits = outputs.lm_logits
@@ -206,10 +258,10 @@ def beam_search_decode(
     device: torch.device,
     beam_size: int,
     encoder_input_ids: Tensor,
-    target_tokenizer: Tokenizer,
     max_seq_length: int,
     return_topk: int = 1,
     encoder_attn_mask: Tensor | None = None,
+    use_cache: bool = False,
 ) -> list[Tensor]:
     """
     Args:
@@ -217,48 +269,44 @@ def beam_search_decode(
         device (torch.device): device
         beam_size (int): beam size
         encoder_input_ids (Tensor): encoder input ids, shape ``(src_seq_length,)``
-        target_tokenizer (Tokenizer): target tokenizer
         max_seq_length (int): maximum sequence length
         return_topk (int): return top k best candidates (default: 1)
         encoder_attn_mask (Tensor | None): attention mask for encoder input, shape ``(src_seq_length,)`` (default: None)
+        use_cache (bool): whether to use kv cache during decoding (default: False)
 
     Returns:
         list[Tensor]: list of candidate tensors of predicted token ids
     """
-
-    sos_token_id = target_tokenizer.token_to_id(SpecialToken.SOS)
-    eos_token_id = target_tokenizer.token_to_id(SpecialToken.EOS)
-
     encoder_input_ids = encoder_input_ids.unsqueeze(0).to(device)
     if encoder_attn_mask is not None:
         encoder_attn_mask = encoder_attn_mask.unsqueeze(0).to(device)
-        encoder_attn_mask = create_encoder_4d_attn_mask(encoder_input_ids, encoder_attn_mask)
+
     encoder_output = None
-    causal_mask = create_causal_mask(max_seq_length).to(device).unsqueeze(0).unsqueeze(0)  # (1, 1, max_seq_length, max_seq_length)
+    sos_token_id = model.config.target_start_token_id
+    eos_token_id = model.config.target_end_token_id
 
     # initialize decoder input which contains only [SOS] token
     decoder_input_ids = torch.empty((1, 1)).fill_(sos_token_id).type_as(encoder_input_ids).to(device)
 
-    # candidate list of tuples (decoder_input, log_score)
-    cands = [(decoder_input_ids, 0.0)]
+    # candidate list of tuples (decoder_input, log_score, kv_caches)
+    cands = [(decoder_input_ids, 0.0, None)]
     for _ in range(max_seq_length):
         new_cands = []
 
-        for cand, log_score in cands:
+        for cand, log_score, kv_caches in cands:
             # do not expand the candidate that have reached <EOS> token
             if cand[0, -1].item() == eos_token_id:
-                new_cands.append((cand, log_score))
+                new_cands.append((cand, log_score, kv_caches))
                 continue
 
-            # create mask for decoder input
-            cand_mask = causal_mask[..., :cand.size(1), :cand.size(1)]
-
+            cur_input_ids = cand if not use_cache else cand[:, [-1]]
             outputs = model(
                 encoder_input_ids=encoder_input_ids,
-                decoder_input_ids=cand,
+                decoder_input_ids=cur_input_ids,
                 encoder_attn_mask=encoder_attn_mask,
-                decoder_attn_mask=cand_mask,
                 encoder_output=encoder_output,
+                kv_caches=kv_caches,
+                use_cache=use_cache,
             )
             if encoder_output is None:
                 encoder_output = outputs.encoder_output
@@ -280,12 +328,12 @@ def beam_search_decode(
                 token_prob = topk_token_prob[0][j].item()
 
                 new_cand = torch.cat([cand, token], dim=1)
-                new_cands.append((new_cand, log_score + token_prob))
+                new_cands.append((new_cand, log_score + token_prob, outputs.kv_caches))
 
-        cands = sorted(new_cands, key=lambda x: x[1], reverse=True)
+        cands = sorted(new_cands, key=itemgetter(1), reverse=True)
         cands = cands[:beam_size]
 
-        if all([cand[0][-1].item() == eos_token_id for cand, _ in cands]):
+        if all([cand[0][-1].item() == eos_token_id for cand, _, __ in cands]):
             break
 
     assert len(cands) == beam_size
