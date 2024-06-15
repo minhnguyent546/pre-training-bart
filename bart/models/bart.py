@@ -89,8 +89,8 @@ class BartClassificationHead(nn.Module):
         output = self.proj(output)
         return output
 
-class BertEncoderForForeignLanguage(nn.Module):
-    """A small additional encoder that replaces the input embeddings in BERT."""
+class BartEncoderForForeignLanguage(nn.Module):
+    """A small additional encoder that replaces the input embeddings in BART."""
     def __init__(self, config: BartForNMTConfig):
         super().__init__()
         self.token_embeddings = InputEmbeddings(
@@ -222,7 +222,7 @@ class BartForNMT(BartBase):
 
         # replace input embedding layer with new randomly initialized encoder
         del self.model.encoder.token_embeddings
-        self.foreign_encoder = BertEncoderForForeignLanguage(config)
+        self.foreign_encoder = BartEncoderForForeignLanguage(config)
 
         if not self.config.shared_vocab and config.target_vocab_size is None:
             raise ValueError('`target_vocab_size` must be provided if `shared_vocab` is `False`')
