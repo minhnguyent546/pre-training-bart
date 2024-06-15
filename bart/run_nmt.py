@@ -5,13 +5,12 @@ Requires: python >= 3.10
 
 import argparse
 
-import pandas as pd
-
 from tokenizers import Tokenizer
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
+import bart.models.utils as model_utils
 from bart import opts, utils
 from bart.bilingual_dataset import CollatorWithPadding
 from bart.compute_bleu import compute_dataset_bleu
@@ -22,7 +21,6 @@ from bart.models import (
     BartForNMTConfig,
     LayerNormalization,
 )
-import bart.models.utils as model_utils
 from bart.trainer import Trainer, TrainingArguments
 
 

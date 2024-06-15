@@ -1,15 +1,15 @@
 from tqdm.autonotebook import tqdm
 
-from torch import Tensor
 import torch
+from torch import Tensor
 
 import datasets
 import evaluate
 from tokenizers import Tokenizer
 
+import bart.models.utils as model_utils
 from bart.constants import LOWER_ONE_EIGHTH_BLOCK, SpecialToken
 from bart.models import BartBase
-import bart.models.utils as model_utils
 
 
 @torch.no_grad()

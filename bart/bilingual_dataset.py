@@ -1,7 +1,7 @@
 from typing import Any
 
-from torch import Tensor
 import torch
+from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 

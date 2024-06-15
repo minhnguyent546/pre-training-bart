@@ -4,9 +4,9 @@ Requires: python >= 3.10
 """
 
 import argparse
-from dataclasses import dataclass
 import math
 import os
+from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
 import numpy as np
@@ -16,8 +16,8 @@ import pyarrow.parquet as pq
 
 from tokenizers import Tokenizer
 
-from torch import Tensor
 import torch
+from torch import Tensor
 
 from tqdm import tqdm
 

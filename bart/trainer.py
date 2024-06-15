@@ -1,6 +1,6 @@
+import os
 from contextlib import nullcontext
 from dataclasses import dataclass
-import os
 
 import torch
 import torch.nn as nn
@@ -10,9 +10,9 @@ from tqdm.autonotebook import tqdm
 
 from tokenizers import Tokenizer
 
+import bart.models.utils as model_utils
 from bart.compute_bleu import compute_dataset_bleu
 from bart.models import BartBase, BartConfig
-import bart.models.utils as model_utils
 
 
 @dataclass

@@ -6,13 +6,13 @@ Requires: python >= 3.10
 import argparse
 from tqdm.auto import tqdm
 
-from tokenizers import AddedToken, Tokenizer
 import tokenizers
 import tokenizers.decoders
 import tokenizers.models
+import tokenizers.normalizers
 import tokenizers.pre_tokenizers
 import tokenizers.trainers
-import tokenizers.normalizers
+from tokenizers import AddedToken, Tokenizer
 
 from bart import opts, utils
 from bart.constants import SpecialToken

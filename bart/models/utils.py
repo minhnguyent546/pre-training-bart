@@ -3,9 +3,9 @@ import os
 
 from tqdm.autonotebook import tqdm
 
-from torch import Tensor, nn
 import torch
 import torch.nn.functional as Fun
+from torch import Tensor, nn
 from torch.utils.data import DataLoader
 
 from tokenizers import Tokenizer

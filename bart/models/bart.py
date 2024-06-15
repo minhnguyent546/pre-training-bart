@@ -1,12 +1,13 @@
 """BART model"""
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 
+import torch.nn.functional as F
 from torch import Tensor
 from torch import nn
-import torch.nn.functional as F
 
+import bart.models.utils as model_utils
 from bart.models.transformer import (
     InputEmbeddings,
     LayerNormalization,
@@ -17,7 +18,6 @@ from bart.models.transformer import (
     TransformerEncoderLayer,
     TransformerOutput,
 )
-import bart.models.utils as model_utils
 from bart.models.utils import initialize_bert_params_fn
 
 

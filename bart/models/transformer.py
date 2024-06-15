@@ -2,12 +2,12 @@
 A standard transformer model as in Vaswani et al. (2017).
 """
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 
+import torch
 from torch import Tensor
 from torch import nn
-import torch
 from torch.nn import functional as F
 
 import bart.models.utils as model_utils
