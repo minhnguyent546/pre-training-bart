@@ -1,5 +1,6 @@
 import glob
 import os
+from operator import itemgetter
 
 from tqdm.autonotebook import tqdm
 
@@ -129,7 +130,6 @@ def eval_model(
         'loss': accum_valid_loss / num_iterations,
     }
 
-@torch.no_grad()
 def greedy_search_decode(
     model,
     device: torch.device,
@@ -163,34 +163,35 @@ def greedy_search_decode(
 
     # initialize decoder input which contains only [SOS] token
     decoder_input_ids = torch.empty((1, 1)).fill_(sos_token_id).type_as(encoder_input_ids).to(device)
-    for _ in range(max_seq_length):
-        # create mask for decoder input
-        decoder_attn_mask = causal_mask[..., :decoder_input_ids.size(1), :decoder_input_ids.size(1)]
+    with torch.no_grad():
+        for _ in range(max_seq_length):
+            # create mask for decoder input
+            decoder_attn_mask = causal_mask[..., :decoder_input_ids.size(1), :decoder_input_ids.size(1)]
 
-        outputs = model(
-            encoder_input_ids=encoder_input_ids,
-            decoder_input_ids=decoder_input_ids,
-            encoder_attn_mask=encoder_attn_mask,
-            decoder_attn_mask=decoder_attn_mask,
-            encoder_output=encoder_output,
-        )
-        if encoder_output is None:
-            encoder_output = outputs.encoder_output
+            outputs = model(
+                encoder_input_ids=encoder_input_ids,
+                decoder_input_ids=decoder_input_ids,
+                encoder_attn_mask=encoder_attn_mask,
+                decoder_attn_mask=decoder_attn_mask,
+                encoder_output=encoder_output,
+            )
+            if encoder_output is None:
+                encoder_output = outputs.encoder_output
 
-        # get token with highest probability
-        logits = outputs.lm_logits
-        logits = logits[:, -1, :]  # (1, target_vocab_size)
-        next_token = logits.argmax(dim=-1)  # (1,)
+            # get token with highest probability
+            logits = outputs.lm_logits
+            logits = logits[:, -1, :]  # (1, target_vocab_size)
+            next_token = logits.argmax(dim=-1)  # (1,)
 
-        # concatenate the next token to the decoder input for the next prediction
-        decoder_input_ids = torch.cat([
-            decoder_input_ids,
-            torch.empty((1, 1)).fill_(next_token.item()).type_as(decoder_input_ids).to(device)
-        ], dim=1)
+            # concatenate the next token to the decoder input for the next prediction
+            decoder_input_ids = torch.cat([
+                decoder_input_ids,
+                torch.empty((1, 1)).fill_(next_token.item()).type_as(decoder_input_ids).to(device)
+            ], dim=1)
 
-        # if we reach the <EOS> token, then stop
-        if next_token == eos_token_id:
-            break
+            # if we reach the <EOS> token, then stop
+            if next_token == eos_token_id:
+                break
 
     return decoder_input_ids.squeeze(0)
 
@@ -200,7 +201,6 @@ def length_penalty(length: int, alpha: float = 0.6) -> float:
     """
     return (5 + length) ** alpha / (5 + 1) ** alpha
 
-@torch.no_grad()
 def beam_search_decode(
     model,
     device: torch.device,
@@ -241,52 +241,53 @@ def beam_search_decode(
 
     # candidate list of tuples (decoder_input, log_score)
     cands = [(decoder_input_ids, 0.0)]
-    for _ in range(max_seq_length):
-        new_cands = []
+    with torch.no_grad():
+        for _ in range(max_seq_length):
+            new_cands = []
 
-        for cand, log_score in cands:
-            # do not expand the candidate that have reached <EOS> token
-            if cand[0, -1].item() == eos_token_id:
-                new_cands.append((cand, log_score))
-                continue
+            for cand, log_score in cands:
+                # do not expand the candidate that have reached <EOS> token
+                if cand[0, -1].item() == eos_token_id:
+                    new_cands.append((cand, log_score))
+                    continue
 
-            # create mask for decoder input
-            cand_mask = causal_mask[..., :cand.size(1), :cand.size(1)]
+                # create mask for decoder input
+                cand_mask = causal_mask[..., :cand.size(1), :cand.size(1)]
 
-            outputs = model(
-                encoder_input_ids=encoder_input_ids,
-                decoder_input_ids=cand,
-                encoder_attn_mask=encoder_attn_mask,
-                decoder_attn_mask=cand_mask,
-                encoder_output=encoder_output,
-            )
-            if encoder_output is None:
-                encoder_output = outputs.encoder_output
+                outputs = model(
+                    encoder_input_ids=encoder_input_ids,
+                    decoder_input_ids=cand,
+                    encoder_attn_mask=encoder_attn_mask,
+                    decoder_attn_mask=cand_mask,
+                    encoder_output=encoder_output,
+                )
+                if encoder_output is None:
+                    encoder_output = outputs.encoder_output
 
-            # get next token probabilities
-            # logits: shape ``(1, target_vocab_size)``
-            # topk_prob       : shape ``(1, beam_size)``
-            # topk_token      : shape ``(1, beam_size)``
-            logits = outputs.lm_logits
-            logits = logits[:, -1, :]  # (1, target_vocab_size)
+                # get next token probabilities
+                # logits: shape ``(1, target_vocab_size)``
+                # topk_prob       : shape ``(1, beam_size)``
+                # topk_token      : shape ``(1, beam_size)``
+                logits = outputs.lm_logits
+                logits = logits[:, -1, :]  # (1, target_vocab_size)
 
-            output = Fun.log_softmax(logits, dim=-1) / length_penalty(cand.size(1) + 1)
-            # get the top k largest tokens
-            topk_token_prob, topk_token = torch.topk(output, beam_size, dim=1)
-            for j in range(beam_size):
-                # token: shape ``(1, 1)``
-                # token_prob: scalar
-                token = topk_token[0][j].unsqueeze(0).unsqueeze(0)
-                token_prob = topk_token_prob[0][j].item()
+                output = Fun.log_softmax(logits, dim=-1) / length_penalty(cand.size(1) + 1)
+                # get the top k largest tokens
+                topk_token_prob, topk_token = torch.topk(output, beam_size, dim=1)
+                for j in range(beam_size):
+                    # token: shape ``(1, 1)``
+                    # token_prob: scalar
+                    token = topk_token[0][j].unsqueeze(0).unsqueeze(0)
+                    token_prob = topk_token_prob[0][j].item()
 
-                new_cand = torch.cat([cand, token], dim=1)
-                new_cands.append((new_cand, log_score + token_prob))
+                    new_cand = torch.cat([cand, token], dim=1)
+                    new_cands.append((new_cand, log_score + token_prob))
 
-        cands = sorted(new_cands, key=lambda x: x[1], reverse=True)
-        cands = cands[:beam_size]
+            cands = sorted(new_cands, key=itemgetter(1), reverse=True)
+            cands = cands[:beam_size]
 
-        if all([cand[0][-1].item() == eos_token_id for cand, _ in cands]):
-            break
+            if all([cand[0][-1].item() == eos_token_id for cand, _ in cands]):
+                break
 
     assert len(cands) == beam_size
     cands = cands[:return_topk]

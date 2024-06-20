@@ -5,7 +5,7 @@ import re
 import regex
 import unicodedata
 import yaml
-from typing import Callable, Literal
+from typing import Callable, Literal, Any
 
 import numpy as np
 
@@ -33,7 +33,7 @@ def load_yaml_config(config_path: str):
         config = yaml.safe_load(config_file)
     return config
 
-def chunks(data: list | str, chunk_size: int = 1_000):
+def chunks(data: list[Any] | str, chunk_size: int = 1_000):
     for i in range(0, len(data), chunk_size):
         yield data[i:i+chunk_size]
 

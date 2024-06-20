@@ -8,7 +8,7 @@ import argparse
 from tokenizers import Tokenizer
 
 import torch
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard.writer import SummaryWriter
 
 import bart.models.utils as model_utils
 from bart import opts, utils

@@ -16,9 +16,6 @@ File should be a json file with the following format:
 
 import argparse
 import json
-from numpy import require
-from tqdm import tqdm
-from typing import List
 
 
 def extract_text_from_json(
@@ -33,7 +30,7 @@ def extract_text_from_json(
     for input_file in input_files:
         with open(input_file, 'r', encoding='utf-8') as f:
             json_data = json.load(f)
-            if not field in json_data:
+            if field not in json_data:
                 raise ValueError(f'Data field {field} not found in {input_file}')
             for item in json_data[field]:
                 for key in keys:
@@ -49,7 +46,7 @@ def extract_text_from_json(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Convert OSCAR dataset from json format to txt format',
+        description='Extract text of specified fields from json files',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(

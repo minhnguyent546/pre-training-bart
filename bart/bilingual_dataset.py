@@ -91,7 +91,7 @@ class BilingualDataset(Dataset):
         self.remove_invalid_pairs()
 
     def remove_invalid_pairs(self) -> None:
-        def _remove_invalid_pair_fn(examples: dict[str, list]) -> list[bool]:
+        def _remove_invalid_pair_fn(examples: dict[str, list[Any]]) -> list[bool]:
             is_valid_item = [True] * len(examples[self.source_key])
             for item_id, (source_text, target_text) in enumerate(zip(examples[self.source_key], examples[self.target_key])):
                 if min(len(source_text), len(target_text)) == 0:
