@@ -1,3 +1,4 @@
 # override jupyter in Github language stats
 # see: https://github.com/github/linguist/blob/master/docs/overrides.md#generated-code
 *.ipynb linguist-generated
+pyrightconfig.json linguist-language=jsonc
