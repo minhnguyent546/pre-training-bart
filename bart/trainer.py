@@ -136,7 +136,7 @@ class Trainer:
 
                     train_progress_bar.set_postfix({'loss': f'{batch_loss:0.3f}'})
 
-                    self.wb_run.log('loss/batch_loss', batch_loss, step=global_step)
+                    self.wb_run.log({'loss/batch_loss': batch_loss}, step=global_step)
 
                     self.accum_train_loss += batch_loss
                     batch_loss = 0.0
@@ -170,7 +170,7 @@ class Trainer:
             'train': self.accum_train_loss / self.args.valid_interval,
             'valid': valid_results['loss'],
         }, step=global_step + 1)
-        self.wb_run.log('valid_bleu', valid_bleu, step=global_step + 1)
+        self.wb_run.log({'valid_bleu': valid_bleu}, step=global_step + 1)
         self.accum_train_loss = 0.0
 
     def _save_checkpoint(
