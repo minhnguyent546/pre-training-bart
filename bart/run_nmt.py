@@ -234,9 +234,6 @@ def run_nmt(args: argparse.Namespace):
     else:
         model.unfreeze_params()
 
-    # wandb
-    wb_run = wandb.init(args.project_name)
-
     # training arguments
     training_args = TrainingArguments(
         checkpoints_dir=args.checkpoints_dir,
@@ -257,6 +254,14 @@ def run_nmt(args: argparse.Namespace):
         log_sentences=args.log_sentences,
         log_sentences_interval=args.log_sentences_interval,
         compute_bleu_max_steps=args.compute_bleu_max_steps,
+    )
+
+    # wandb
+    all_config = vars(bart_for_nmt_config) | vars(training_args)
+    wb_run = wandb.init(
+        project=args.project_name,
+        name=args.expr_name,
+        config=all_config,
     )
 
     # trainer

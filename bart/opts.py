@@ -319,7 +319,13 @@ def _add_training_opts(parser: argparse.ArgumentParser) -> None:
         '--project-name',
         help='Project name for wandb logging',
         type=str,
-        default='bart',
+        default='pre-training-bart',
+    )
+    group.add_argument(
+        '--expr-name',
+        help='Experiment name',
+        type=str,
+        default='cool-name',
     )
     group.add_argument(
         '--from-checkpoint',

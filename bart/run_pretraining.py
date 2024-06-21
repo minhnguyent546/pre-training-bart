@@ -135,10 +135,6 @@ def train_model(args: argparse.Namespace):
         if 'accum_train_loss' in checkpoint_states:
             initial_accum_train_loss = checkpoint_states['accum_train_loss']
 
-    # wandb
-    wb_run = wandb.init(args.project_name)
-
-
     # training arguments
     training_args = TrainingArguments(
         checkpoints_dir=args.checkpoints_dir,
@@ -159,6 +155,14 @@ def train_model(args: argparse.Namespace):
         log_sentences=args.log_sentences,
         log_sentences_interval=args.log_sentences_interval,
         compute_bleu_max_steps=args.compute_bleu_max_steps,
+    )
+
+    # wandb
+    all_config = vars(bart_config) | vars(training_args)
+    wb_run = wandb.init(
+        project=args.project_name,
+        name=args.expr_name,
+        config=all_config,
     )
 
     # trainer

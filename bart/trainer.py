@@ -166,9 +166,9 @@ class Trainer:
             logging_interval=self.args.log_sentences_interval,
             max_steps=self.args.compute_bleu_max_steps,
         )
-        self.wb_run.log('loss', {
-            'train': self.accum_train_loss / self.args.valid_interval,
-            'valid': valid_results['loss'],
+        self.wb_run.log({
+            'loss/train': self.accum_train_loss / self.args.valid_interval,
+            'loss/valid': valid_results['loss'],
         }, step=global_step + 1)
         self.wb_run.log({'valid_bleu': valid_bleu}, step=global_step + 1)
         self.accum_train_loss = 0.0
