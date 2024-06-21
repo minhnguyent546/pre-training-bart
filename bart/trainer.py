@@ -2,10 +2,11 @@ import os
 from contextlib import nullcontext
 from dataclasses import dataclass
 
+from wandb.sdk.wandb_run import Run as WbRun
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
 from tqdm.autonotebook import tqdm
 
 from tokenizers import Tokenizer
@@ -48,7 +49,7 @@ class Trainer:
         bart_config: BartConfig,
         lr_scheduler,
         scaler,
-        writer: SummaryWriter,
+        wb_run: WbRun,
     ) -> None:
         self.model = model
         self.device = model.device
@@ -58,7 +59,7 @@ class Trainer:
         self.args = args
         self.bart_config = bart_config
         self.lr_scheduler = lr_scheduler
-        self.writer = writer
+        self.wb_run = wb_run
 
         # mixed precision training with fp16
         self.autocast_ctx = nullcontext()
@@ -129,14 +130,13 @@ class Trainer:
                     self.scaler.update()
 
                     for group_id, group_lr in enumerate(self.lr_scheduler.get_last_lr()):
-                        self.writer.add_scalar(f'learning_rate/group-{group_id}', group_lr, global_step)
+                        self.wb_run.log({f'learning_rate/group-{group_id}': group_lr}, step=global_step)
 
                     self.lr_scheduler.step()
 
                     train_progress_bar.set_postfix({'loss': f'{batch_loss:0.3f}'})
 
-                    self.writer.add_scalar('loss/batch_loss', batch_loss, global_step)
-                    self.writer.flush()
+                    self.wb_run.log('loss/batch_loss', batch_loss, step=global_step)
 
                     self.accum_train_loss += batch_loss
                     batch_loss = 0.0
@@ -166,12 +166,11 @@ class Trainer:
             logging_interval=self.args.log_sentences_interval,
             max_steps=self.args.compute_bleu_max_steps,
         )
-        self.writer.add_scalars('loss', {
+        self.wb_run.log('loss', {
             'train': self.accum_train_loss / self.args.valid_interval,
             'valid': valid_results['loss'],
-        }, global_step + 1)
-        self.writer.add_scalar('valid_bleu', valid_bleu, global_step + 1)
-        self.writer.flush()
+        }, step=global_step + 1)
+        self.wb_run.log('valid_bleu', valid_bleu, step=global_step + 1)
         self.accum_train_loss = 0.0
 
     def _save_checkpoint(
