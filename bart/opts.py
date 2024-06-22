@@ -48,12 +48,6 @@ def _add_general_opts(parser: argparse.ArgumentParser, has_do_test: bool = False
         default='./checkpoints/target_tokenizer.json',
     )
     group.add_argument(
-        '--expr-dir',
-        help='Experiment directory',
-        type=str,
-        default='runs/bart',
-    )
-    group.add_argument(
         '--seed',
         help='Random seed (e.g. for model initialization, data loaders, ...)',
         type=int,
@@ -320,6 +314,18 @@ def _add_training_opts(parser: argparse.ArgumentParser) -> None:
         help='Seed for splitting dataset',
         type=int,
         default=1061109567,
+    )
+    group.add_argument(
+        '--project-name',
+        help='Project name for wandb logging',
+        type=str,
+        default='pre-training-bart',
+    )
+    group.add_argument(
+        '--expr-name',
+        help='Experiment name',
+        type=str,
+        default='cool-name',
     )
     group.add_argument(
         '--from-checkpoint',

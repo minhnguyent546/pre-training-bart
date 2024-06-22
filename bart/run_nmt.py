@@ -7,8 +7,9 @@ import argparse
 
 from tokenizers import Tokenizer
 
+import wandb
+
 import torch
-from torch.utils.tensorboard.writer import SummaryWriter
 
 import bart.models.utils as model_utils
 from bart import opts, utils
@@ -233,9 +234,6 @@ def run_nmt(args: argparse.Namespace):
     else:
         model.unfreeze_params()
 
-    # tensorboard
-    writer = SummaryWriter(args.expr_dir)
-
     # training arguments
     training_args = TrainingArguments(
         checkpoints_dir=args.checkpoints_dir,
@@ -258,6 +256,14 @@ def run_nmt(args: argparse.Namespace):
         compute_bleu_max_steps=args.compute_bleu_max_steps,
     )
 
+    # wandb
+    all_config = vars(bart_for_nmt_config) | vars(training_args)
+    wb_run = wandb.init(
+        project=args.project_name,
+        name=args.expr_name,
+        config=all_config,
+    )
+
     # trainer
     trainer = Trainer(
         model=model,
@@ -268,7 +274,7 @@ def run_nmt(args: argparse.Namespace):
         bart_config=bart_for_nmt_config,
         lr_scheduler=lr_scheduler,
         scaler=scaler,
-        writer=writer,
+        wb_run=wb_run,
     )
     print(f'Model has {model.num_params()} parameters')
     trainer.train(train_data_loader, validation_data_loader)

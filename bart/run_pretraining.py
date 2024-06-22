@@ -7,9 +7,10 @@ import argparse
 
 from tokenizers import Tokenizer
 
+import wandb
+
 import torch
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard.writer import SummaryWriter
 
 from bart import opts, utils
 from bart.constants import SpecialToken
@@ -134,9 +135,6 @@ def train_model(args: argparse.Namespace):
         if 'accum_train_loss' in checkpoint_states:
             initial_accum_train_loss = checkpoint_states['accum_train_loss']
 
-    # tensorboard
-    writer = SummaryWriter(args.expr_dir)
-
     # training arguments
     training_args = TrainingArguments(
         checkpoints_dir=args.checkpoints_dir,
@@ -159,6 +157,14 @@ def train_model(args: argparse.Namespace):
         compute_bleu_max_steps=args.compute_bleu_max_steps,
     )
 
+    # wandb
+    all_config = vars(bart_config) | vars(training_args)
+    wb_run = wandb.init(
+        project=args.project_name,
+        name=args.expr_name,
+        config=all_config,
+    )
+
     # trainer
     trainer = Trainer(
         model=model,
@@ -169,7 +175,7 @@ def train_model(args: argparse.Namespace):
         bart_config=bart_config,
         lr_scheduler=lr_scheduler,
         scaler=scaler,
-        writer=writer,
+        wb_run=wb_run,
     )
     print(f'Model has {model.num_params()} parameters')
     trainer.train(train_data_loader, test_data_loader)

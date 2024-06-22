@@ -1,11 +1,13 @@
 import os
 from contextlib import nullcontext
 from dataclasses import dataclass
+from typing import Any
+
+from wandb.sdk.wandb_run import Run as WbRun
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm.autonotebook import tqdm
 
 from tokenizers import Tokenizer
@@ -48,7 +50,7 @@ class Trainer:
         bart_config: BartConfig,
         lr_scheduler,
         scaler,
-        writer: SummaryWriter,
+        wb_run: WbRun | None = None,
     ) -> None:
         self.model = model
         self.device = model.device
@@ -58,7 +60,7 @@ class Trainer:
         self.args = args
         self.bart_config = bart_config
         self.lr_scheduler = lr_scheduler
-        self.writer = writer
+        self.wb_run = wb_run
 
         # mixed precision training with fp16
         self.autocast_ctx = nullcontext()
@@ -128,21 +130,16 @@ class Trainer:
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
 
-                    for group_id, group_lr in enumerate(self.lr_scheduler.get_last_lr()):
-                        self.writer.add_scalar(f'learning_rate/group-{group_id}', group_lr, global_step)
-
+                    self._maybe_report_step(batch_loss, step=global_step)
                     self.lr_scheduler.step()
 
                     train_progress_bar.set_postfix({'loss': f'{batch_loss:0.3f}'})
-
-                    self.writer.add_scalar('loss/batch_loss', batch_loss, global_step)
-                    self.writer.flush()
 
                     self.accum_train_loss += batch_loss
                     batch_loss = 0.0
 
                     if (global_step + 1) % self.args.valid_interval == 0:
-                        self._valid_step(global_step, valid_data_loader)
+                        self._valid_step(global_step + 1, valid_data_loader)
 
                     if (global_step + 1) % self.args.save_interval == 0:
                         self._save_checkpoint(global_step + 1)
@@ -152,7 +149,7 @@ class Trainer:
                     if global_step >= self.args.train_steps:
                         break
 
-    def _valid_step(self, global_step: int, valid_data_loader: DataLoader):
+    def _valid_step(self, step: int, valid_data_loader: DataLoader):
         valid_results = model_utils.eval_model(self.model, valid_data_loader, self.device)
         valid_bleu = compute_dataset_bleu(
             self.model,
@@ -166,12 +163,7 @@ class Trainer:
             logging_interval=self.args.log_sentences_interval,
             max_steps=self.args.compute_bleu_max_steps,
         )
-        self.writer.add_scalars('loss', {
-            'train': self.accum_train_loss / self.args.valid_interval,
-            'valid': valid_results['loss'],
-        }, global_step + 1)
-        self.writer.add_scalar('valid_bleu', valid_bleu, global_step + 1)
-        self.writer.flush()
+        self._maybe_report_valid_step(valid_results, valid_bleu=valid_bleu, step=step)
         self.accum_train_loss = 0.0
 
     def _save_checkpoint(
@@ -195,3 +187,28 @@ class Trainer:
         )
         model_save_path = os.path.join(self.args.checkpoints_dir, f'{self.args.model_basename}-{global_step}.pt')
         torch.save(checkpoint_dict, model_save_path)
+
+    def _maybe_report_step(self, batch_loss: float, step: int) -> None:
+        if self.wb_run is None:
+            return
+
+        for group_id, group_lr in enumerate(self.lr_scheduler.get_last_lr()):
+            self.wb_run.log({f'learning_rate/group-{group_id}': group_lr}, step=step)
+
+        self.wb_run.log({'loss/batch_loss': batch_loss}, step=step)
+
+    def _maybe_report_valid_step(
+        self,
+        valid_results: dict[str, Any],
+        step: int,
+        valid_bleu: float | None = None,
+    ) -> None:
+        if self.wb_run is None:
+            return
+
+        self.wb_run.log({
+            'loss/train': self.accum_train_loss / self.args.valid_interval,
+            'loss/valid': valid_results['loss'],
+        }, step=step)
+        if valid_bleu is not None:
+            self.wb_run.log({'valid_bleu': valid_bleu}, step=step)
