@@ -257,12 +257,16 @@ def run_nmt(args: argparse.Namespace):
     )
 
     # wandb
-    all_config = vars(bart_for_nmt_config) | vars(training_args)
-    wb_run = wandb.init(
-        project=args.project_name,
-        name=args.expr_name,
-        config=all_config,
-    )
+    wb_run = None
+    if not args.disable_wandb:
+        all_config = vars(bart_for_nmt_config) | vars(training_args)
+        wb_run = wandb.init(
+            project=args.project_name,
+            name=args.expr_name,
+            config=all_config,
+            id=args.wandb_resume_id,
+            resume='must' if args.wandb_resume_id is not None else None,
+        )
 
     # trainer
     trainer = Trainer(

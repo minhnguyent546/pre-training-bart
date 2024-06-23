@@ -10,21 +10,23 @@ def prepare_training_data_opts(parser: argparse.ArgumentParser) -> None:
     _add_general_opts(parser)
     _add_data_prepare_opts(parser)
 
-def pretrain_opts(parser):
+def pretrain_opts(parser) -> None:
     """All options used in pretraining"""
     _add_general_opts(parser)
     _add_dataset_opts(parser)
     _add_model_opts(parser)
     _add_training_opts(parser)
+    _add_wandb_opts(parser)
     _add_compute_valid_bleu_opts(parser)
 
-def fine_tune_nmt_opts(parser):
+def fine_tune_nmt_opts(parser) -> None:
     """All options used in fine-tuning nmt"""
     _add_general_opts(parser, has_do_test=True)
     _add_dataset_opts(parser)
     _add_model_opts(parser)
     _add_training_opts(parser)
     _add_fine_tune_nmt_opts(parser)
+    _add_wandb_opts(parser)
     _add_compute_valid_bleu_opts(parser)
 
 def _add_general_opts(parser: argparse.ArgumentParser, has_do_test: bool = False) -> None:
@@ -316,18 +318,6 @@ def _add_training_opts(parser: argparse.ArgumentParser) -> None:
         default=1061109567,
     )
     group.add_argument(
-        '--project-name',
-        help='Project name for wandb logging',
-        type=str,
-        default='pre-training-bart',
-    )
-    group.add_argument(
-        '--expr-name',
-        help='Experiment name',
-        type=str,
-        default='cool-name',
-    )
-    group.add_argument(
         '--from-checkpoint',
         help='Start training from this checkpoint',
         type=str,
@@ -416,6 +406,33 @@ def _add_training_opts(parser: argparse.ArgumentParser) -> None:
         type=float,
         default=1.0,
     )
+
+def _add_wandb_opts(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group('Wandb')
+
+    group.add_argument(
+        '--disable-wandb',
+        help='Whether to not use wandb for logging',
+        action='store_true',
+    )
+    group.add_argument(
+        '--project-name',
+        help='Project name for wandb logging',
+        type=str,
+        default='pre-training-bart',
+    )
+    group.add_argument(
+        '--expr-name',
+        help='Experiment name',
+        type=str,
+        default='base',
+    )
+    group.add_argument(
+        '--wandb-resume-id',
+        help='Resume wandb previous run from this id',
+        type=str,
+    )
+
 
 def _add_fine_tune_nmt_opts(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group('Fine-tuning NMT')
