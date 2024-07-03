@@ -70,7 +70,7 @@ def train_model(args: argparse.Namespace):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     device = torch.device(device)
     use_fp16 = args.fp16 and device.type == 'cuda'
-    if args.is_master:
+    if use_fp16 and args.is_master:
         print('Training with mixed precision fp16')
 
     checkpoint_states = None
