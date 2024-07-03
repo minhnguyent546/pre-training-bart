@@ -37,13 +37,12 @@ def load_yaml_config(config_path: str):
 
 def setup_ddp(args: argparse.Namespace) -> None:
     args.rank = int(os.environ.get('RANK', -1))
+    args.local_rank = int(os.environ.get('LOCAL_RANK', -1))
+    args.world_size = int(os.environ.get('WORLD_SIZE', 0))
     args.ddp = args.rank != -1
     args.master_rank = 0 if args.ddp else -1
     args.is_master = args.rank == args.master_rank
     if args.ddp:
-        args.local_rank = int(os.environ['LOCAL_RANK'])
-        args.world_size = int(os.environ['WORLD_SIZE'])
-
         # set appropriate CUDA device
         torch.cuda.set_device(args.local_rank)
 

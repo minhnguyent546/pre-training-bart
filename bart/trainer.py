@@ -46,8 +46,8 @@ class TrainingArguments():
     is_master: bool = True
     rank: int = -1
     local_rank: int = -1
-    master_rank: int = 0
-    world_size: int = 1
+    master_rank: int = -1
+    world_size: int = 0
 
 class Trainer:
     def __init__(
