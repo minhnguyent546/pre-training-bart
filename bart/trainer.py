@@ -1,12 +1,16 @@
+from __future__ import annotations
+
 import os
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from wandb.sdk.wandb_run import Run as WbRun
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from tqdm.autonotebook import tqdm
 
@@ -32,17 +36,23 @@ class TrainingArguments():
     label_smoothing: float = 0.0
     max_grad_norm: float = 0.0
     initial_global_step: int = 0
-    initial_accum_train_loss: float = 0.0
+    initial_running_loss: AverageMeter | None = None
     beam_size: int = 4
     beam_return_topk: int = 1
     log_sentences: bool = False
     log_sentences_interval: int = 25
     compute_bleu_max_steps: int = 200
+    ddp: bool = False
+    is_master: bool = True
+    rank: int = -1
+    local_rank: int = -1
+    master_rank: int = 0
+    world_size: int = 1
 
 class Trainer:
     def __init__(
         self,
-        model: BartBase,
+        model: BartBase | DDP,
         optimizer: torch.optim.Optimizer,
         src_tokenizer: Tokenizer,
         target_tokenizer: Tokenizer,
@@ -70,12 +80,15 @@ class Trainer:
             self.autocast_ctx = torch.cuda.amp.autocast(dtype=self.train_dtype)
 
         self.scaler = scaler
-        self.accum_train_loss = args.initial_accum_train_loss
+        self.running_loss = args.initial_running_loss
+        if self.running_loss is None:
+            self.running_loss = AverageMeter('running_loss', device=self.device)
 
     def train(
         self,
         train_data_loader: DataLoader,
         valid_data_loader: DataLoader,
+        train_sampler=None,
     ) -> None:
         # set model in training mode
         self.model.train()
@@ -85,6 +98,8 @@ class Trainer:
         batch_loss = 0.0
         while global_step < self.args.train_steps:
             torch.cuda.empty_cache()
+            if train_sampler is not None:
+                train_sampler.set_epoch(global_step // len(train_data_loader))
 
             for batch_idx, batch in enumerate(train_data_loader):
                 input_ids = batch['input_ids'].to(self.device).type(torch.int32)
@@ -134,8 +149,7 @@ class Trainer:
                     self.lr_scheduler.step()
 
                     train_progress_bar.set_postfix({'loss': f'{batch_loss:0.3f}'})
-
-                    self.accum_train_loss += batch_loss
+                    self.running_loss.update(batch_loss)
                     batch_loss = 0.0
 
                     if (global_step + 1) % self.args.valid_interval == 0:
@@ -150,43 +164,53 @@ class Trainer:
                         break
 
     def _valid_step(self, step: int, valid_data_loader: DataLoader):
+        if self.args.ddp:
+            self.running_loss.reduce(dst=self.args.master_rank)
         valid_results = model_utils.eval_model(self.model, valid_data_loader, self.device)
-        valid_bleu = compute_dataset_bleu(
-            self.model,
-            valid_data_loader.dataset,
-            self.src_tokenizer,
-            self.target_tokenizer,
-            self.bart_config.target_seq_length,
-            beam_size=self.args.beam_size,
-            beam_return_topk=self.args.beam_return_topk,
-            log_sentences=self.args.log_sentences,
-            logging_interval=self.args.log_sentences_interval,
-            max_steps=self.args.compute_bleu_max_steps,
-        )
-        self._maybe_report_valid_step(valid_results, valid_bleu=valid_bleu, step=step)
-        self.accum_train_loss = 0.0
+        # TODO: make compute_data_bleu run on multiple GPUs
+        if self.args.is_master:
+            valid_bleu = compute_dataset_bleu(
+                self.model,
+                valid_data_loader.dataset,
+                self.src_tokenizer,
+                self.target_tokenizer,
+                self.bart_config.target_seq_length,
+                beam_size=self.args.beam_size,
+                beam_return_topk=self.args.beam_return_topk,
+                log_sentences=self.args.log_sentences,
+                logging_interval=self.args.log_sentences_interval,
+                max_steps=self.args.compute_bleu_max_steps,
+            )
+            self._maybe_report_valid_step(valid_results, valid_bleu=valid_bleu, step=step)
+        self.running_loss.reset()
 
     def _save_checkpoint(
         self,
         global_step: int,
     ) -> None:
-        checkpoint_dict = {
-            'global_step': global_step,
-            'model': self.model.state_dict(),
-            'optimizer': self.optimizer.state_dict(),
-            'lr_scheduler': self.lr_scheduler.state_dict(),
-            'scaler': self.scaler.state_dict(),
-            'config': self.bart_config,
-            'training_args': self.args,
-            'accum_train_loss': self.accum_train_loss,
-        }
-        model_utils.ensure_num_saved_checkpoints(
-            self.args.checkpoints_dir,
-            self.args.model_basename,
-            self.args.saved_checkpoints_limit - 1,
-        )
-        model_save_path = os.path.join(self.args.checkpoints_dir, f'{self.args.model_basename}-{global_step}.pt')
-        torch.save(checkpoint_dict, model_save_path)
+        if self.args.ddp:
+            running_losses = [None for _ in range(self.args.world_size)] if self.args.is_master else None
+            dist.gather_object(vars(self.running_loss), running_losses, dst=self.args.master_rank)
+        else:
+            running_losses = self.running_loss
+        if self.args.is_master:
+            checkpoint_dict = {
+                'global_step': global_step,
+                'model': self.model.state_dict(),
+                'optimizer': self.optimizer.state_dict(),
+                'lr_scheduler': self.lr_scheduler.state_dict(),
+                'scaler': self.scaler.state_dict(),
+                'config': self.bart_config,
+                'training_args': self.args,
+                'running_loss': running_losses,
+            }
+            model_utils.ensure_num_saved_checkpoints(
+                self.args.checkpoints_dir,
+                self.args.model_basename,
+                self.args.saved_checkpoints_limit - 1,
+            )
+            model_save_path = os.path.join(self.args.checkpoints_dir, f'{self.args.model_basename}-{global_step}.pt')
+            torch.save(checkpoint_dict, model_save_path)
 
     def _maybe_report_step(self, batch_loss: float, step: int) -> None:
         if self.wb_run is None:
@@ -207,8 +231,67 @@ class Trainer:
             return
 
         self.wb_run.log({
-            'loss/train': self.accum_train_loss / self.args.valid_interval,
+            'loss/train': self.running_loss.average,
             'loss/valid': valid_results['loss'],
         }, step=step)
         if valid_bleu is not None:
             self.wb_run.log({'valid_bleu': valid_bleu}, step=step)
+
+class AverageMeter:
+    """A class for working with average meters."""
+    def __init__(
+        self,
+        name: str,
+        value: int | float = 0.0,
+        count: int = 0,
+        sum: int | float = 0.0,
+        device: torch.device | Literal['auto'] = 'auto',
+    ) -> None:
+        if count == 0:
+            value = 0
+            sum = 0
+        self.name = name
+        self.value = value
+        self.count = count
+        self.sum = sum
+        if device == 'auto':
+            device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+        self.device = device
+
+    def update(self, value: int | float, nums: int = 1) -> None:
+        self.value = value
+        self.sum += value * nums
+        self.count += nums
+
+    def reduce(self, dst: int) -> None:
+        meters_to_reduce = torch.tensor([self.sum, self.count], dtype=torch.float32, device=self.device)
+        # only `Tensor` of process with rank `dst` will be modified in-place,
+        # `Tensor` of other processes will remain the same
+        dist.reduce(meters_to_reduce, dst=dst, op=dist.ReduceOp.SUM)
+        self.sum, self.count = meters_to_reduce.tolist()
+
+    def all_reduce(self) -> None:
+        meters_to_reduce = torch.tensor([self.sum, self.count], dtype=torch.float32, device=self.device)
+        dist.all_reduce(meters_to_reduce, op=dist.ReduceOp.SUM)
+        self.sum, self.count = meters_to_reduce.tolist()
+
+    @property
+    def average(self) -> float:
+        try:
+            return self.sum / self.count
+        except ZeroDivisionError:
+            return 0.0
+
+    def reset(self) -> None:
+        self.value = 0.0
+        self.sum = 0.0
+        self.count = 0
+
+    def __repr__(self) -> str:
+        return (
+            f'{self.name}(value={self.value}, '
+            f'average={self.average}, '
+            f'sum={self.sum}, '
+            f'count={self.count}, '
+            f'device={self.device})'
+        )

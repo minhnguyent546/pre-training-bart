@@ -10,10 +10,15 @@ from tokenizers import Tokenizer
 import wandb
 
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 import bart.models.utils as model_utils
-from bart import opts, utils
-from bart.bilingual_dataset import CollatorWithPadding
+import bart.opts as opts
+import bart.utils as utils
+from bart.bilingual_dataset import CollatorWithPadding, BilingualDataset
 from bart.compute_bleu import compute_dataset_bleu
 from bart.constants import SpecialToken
 from bart.models import (
@@ -22,7 +27,7 @@ from bart.models import (
     BartForNMTConfig,
     LayerNormalization,
 )
-from bart.trainer import Trainer, TrainingArguments
+from bart.trainer import Trainer, TrainingArguments, AverageMeter
 
 
 def run_nmt(args: argparse.Namespace):
@@ -43,46 +48,49 @@ def run_nmt(args: argparse.Namespace):
         field=args.field,
     )
 
-    # creating data loaders
+    # creating data bilingual datasets, samplers, and data loaders
     pad_features = ['input_ids', 'labels']
     data_collator = CollatorWithPadding(pad_token_id, pad_features)
-    train_data_loader = None
-    validation_data_loader = None
-    test_data_loader = None
+    train_data_loader, train_sampler = None, None
+    validation_data_loader, validation_sampler = None, None
+    test_data_loader, test_sampler = None, None
     if 'train' in raw_dataset:
-        train_data_loader = utils.make_bilingual_data_loader(
-            raw_dataset['train'],
-            src_tokenizer,
-            target_tokenizer,
-            args.src_seq_length,
-            args.target_seq_length,
-            args.train_batch_size,
-            shuffle=True,
-            pin_memory=True,
-            collate_fn=data_collator,
+        train_dataset = BilingualDataset(
+            raw_dataset['train'], src_tokenizer, target_tokenizer,
+            args.src_seq_length, args.target_seq_length,
+        )
+        if args.ddp:
+            train_sampler = DistributedSampler(train_dataset, shuffle=True, seed=args.seed)
+        train_data_loader = DataLoader(
+            train_dataset,
+            batch_size=args.train_batch_size, shuffle=(train_sampler is None),
+            sampler=train_sampler, pin_memory=True, collate_fn=data_collator,
         )
     if 'validation' in raw_dataset:
-        validation_data_loader = utils.make_bilingual_data_loader(
-            raw_dataset['validation'],
-            src_tokenizer,
-            target_tokenizer,
-            args.src_seq_length,
-            args.target_seq_length,
-            args.eval_batch_size,
-            pin_memory=True,
-            collate_fn=data_collator,
+        validation_dataset = BilingualDataset(
+            raw_dataset['validation'], src_tokenizer, target_tokenizer,
+            args.src_seq_length, args.target_seq_length,
+        )
+        if args.ddp:
+            validation_sampler = DistributedSampler(validation_dataset, shuffle=False, seed=args.seed, drop_last=True)
+        validation_data_loader = DataLoader(
+            validation_dataset,
+            batch_size=args.eval_batch_size, shuffle=False,
+            sampler=validation_sampler, pin_memory=True, collate_fn=data_collator,
         )
     if 'test' in raw_dataset:
-        test_data_loader = utils.make_bilingual_data_loader(
-            raw_dataset['test'],
-            src_tokenizer,
-            target_tokenizer,
-            args.src_seq_length,
-            args.target_seq_length,
-            args.eval_batch_size,
-            pin_memory=True,
-            collate_fn=data_collator,
+        test_dataset = BilingualDataset(
+            raw_dataset['test'], src_tokenizer, target_tokenizer,
+            args.src_seq_length, args.target_seq_length,
         )
+        if args.ddp:
+            test_sampler = DistributedSampler(test_dataset, shuffle=False, seed=args.seed, drop_last=True)
+        test_data_loader = DataLoader(
+            test_dataset,
+            batch_size=args.eval_batch_size, shuffle=False,
+            sampler=test_sampler, pin_memory=True, collate_fn=data_collator,
+        )
+
     if getattr(args, 'do_test', False):
         if test_data_loader is None:
             raise ValueError('`--test-files` is required for testing')
@@ -98,12 +106,15 @@ def run_nmt(args: argparse.Namespace):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     device = torch.device(device)
     use_fp16 = args.fp16 and device.type == 'cuda'
+    if args.is_master:
+        print('Training with mixed precision fp16')
 
     checkpoint_states = None
     pretrained_checkpoint_states = None
     if args.from_checkpoint is not None:
         # resume from previous checkpoint
-        print(f'Loading states from checkpoint {args.from_checkpoint}')
+        if args.is_master:
+            print(f'Loading states from checkpoint {args.from_checkpoint}')
 
         checkpoint_states = torch.load(args.from_checkpoint, map_location=device)
         required_keys = ['model', 'optimizer', 'lr_scheduler', 'config']
@@ -149,7 +160,8 @@ def run_nmt(args: argparse.Namespace):
             foreign_encoder_num_heads=args.foreign_encoder_num_heads,
         )
         if args.from_pretrained is not None:
-            print(f'Starting fine-tuning from pretrained checkpoint {args.from_pretrained}')
+            if args.is_master:
+                print(f'Starting fine-tuning from pretrained checkpoint {args.from_pretrained}')
             pretrained_checkpoint_states = torch.load(args.from_pretrained, map_location=device)
             required_keys = ['model', 'config']
             for key in required_keys:
@@ -167,40 +179,49 @@ def run_nmt(args: argparse.Namespace):
                 value = getattr(pretrained_bart_config, key)
                 setattr(bart_for_nmt_config, key, value)
         else:
-            print('Starting training from scratch')
+            if args.is_master:
+                print('Starting training from scratch')
 
     # model, optimizer, lr_scheduler, scaler
     model = BartForNMT(bart_for_nmt_config)
     model.to(device)
 
+    # convert model for distributed data parallel training
+    raw_model = model
+    if args.ddp:
+        model = DDP(model, device_ids=[args.local_rank], output_device=args.local_rank)
+
     if pretrained_checkpoint_states is not None:
-        model.load_state_dict(pretrained_checkpoint_states['model'], strict=False)
+        raw_model.load_state_dict(pretrained_checkpoint_states['model'], strict=False)
     if checkpoint_states is not None:
-        model.load_state_dict(checkpoint_states['model'])
+        raw_model.load_state_dict(checkpoint_states['model'])
 
     if getattr(args, 'do_test', False):
         test_results = model_utils.eval_model(model, test_data_loader, device)
-        test_bleu = compute_dataset_bleu(
-            model,
-            test_data_loader.dataset,
-            src_tokenizer,
-            target_tokenizer,
-            bart_for_nmt_config.target_seq_length,
-            beam_size=args.beam_size,
-            beam_return_topk=args.beam_return_topk,
-            log_sentences=args.log_sentences,
-            logging_interval=args.log_sentences_interval,
-            max_steps=args.compute_bleu_max_steps,
-        )
-        print('*** Test result ***')
-        print(f'Test loss: {test_results["loss"]:.3f}')
-        print(f'Test BLEU: {test_bleu:.3f}')
-        print(f'Test perplexity: {utils.get_perplexity(test_results["loss"]):.3f}')
-        return
+
+        # TODO: make compute_data_bleu run on multiple GPUs
+        if args.is_master:
+            test_bleu = compute_dataset_bleu(
+                raw_model,
+                test_data_loader.dataset,
+                src_tokenizer,
+                target_tokenizer,
+                bart_for_nmt_config.target_seq_length,
+                beam_size=args.beam_size,
+                beam_return_topk=args.beam_return_topk,
+                log_sentences=args.log_sentences,
+                logging_interval=args.log_sentences_interval,
+                max_steps=args.compute_bleu_max_steps,
+            )
+            print('*** Test result ***')
+            print(f'Test loss: {test_results["loss"]:.3f}')
+            print(f'Test BLEU: {test_bleu:.3f}')
+            print(f'Test perplexity: {utils.get_perplexity(test_results["loss"]):.3f}')
+            return
 
     learning_rate = args.learning_rate
     optimizer = utils.make_optimizer(
-        model,
+        raw_model,
         args.optim,
         learning_rate=learning_rate,
         weight_decay=args.weight_decay,
@@ -217,22 +238,25 @@ def run_nmt(args: argparse.Namespace):
     scaler = torch.cuda.amp.GradScaler(enabled=use_fp16)
 
     initial_global_step = 0
-    initial_accum_train_loss = 0.0
+    initial_running_loss = None
     if checkpoint_states is not None:
         optimizer.load_state_dict(checkpoint_states['optimizer'])
         lr_scheduler.load_state_dict(checkpoint_states['lr_scheduler'])
         scaler.load_state_dict(checkpoint_states['scaler'])
         if 'global_step' in checkpoint_states:
             initial_global_step = checkpoint_states['global_step']
-        if 'accum_train_loss' in checkpoint_states:
-            initial_accum_train_loss = checkpoint_states['accum_train_loss']
+        if 'running_loss' in checkpoint_states:
+            if args.ddp:
+                initial_running_loss = AverageMeter(**checkpoint_states['running_loss'][args.rank])
+            else:
+                initial_running_loss = AverageMeter(**checkpoint_states['running_loss'])
 
     # freezing params for fine-tuning on machine translation task
     # for more details, see https://arxiv.org/abs/1910.13461 (Section 3.4)
     if args.freeze_params:
-        model.freeze_params()
+        raw_model.freeze_params()
     else:
-        model.unfreeze_params()
+        raw_model.unfreeze_params()
 
     # training arguments
     training_args = TrainingArguments(
@@ -248,17 +272,23 @@ def run_nmt(args: argparse.Namespace):
         label_smoothing=args.label_smoothing,
         max_grad_norm=args.max_grad_norm,
         initial_global_step=initial_global_step,
-        initial_accum_train_loss=initial_accum_train_loss,
+        initial_running_loss=initial_running_loss,
         beam_size=args.beam_size,
         beam_return_topk=args.beam_return_topk,
         log_sentences=args.log_sentences,
         log_sentences_interval=args.log_sentences_interval,
         compute_bleu_max_steps=args.compute_bleu_max_steps,
+        ddp=args.ddp,
+        is_master=args.is_master,
+        rank=args.rank,
+        local_rank=args.local_rank,
+        master_rank=args.master_rank,
+        world_size=args.world_size,
     )
 
     # wandb
     wb_run = None
-    if not args.disable_wandb:
+    if not args.disable_wandb and args.is_master:
         all_config = vars(bart_for_nmt_config) | vars(training_args)
         wb_run = wandb.init(
             project=args.project_name,
@@ -280,8 +310,9 @@ def run_nmt(args: argparse.Namespace):
         scaler=scaler,
         wb_run=wb_run,
     )
-    print(f'Model has {model.num_params()} parameters')
-    trainer.train(train_data_loader, validation_data_loader)
+    if args.is_master:
+        print(f'Model has {model.num_params()} parameters')
+    trainer.train(train_data_loader, validation_data_loader, train_sampler=train_sampler)
 
 def main():
     parser = argparse.ArgumentParser(
@@ -291,8 +322,13 @@ def main():
     opts.fine_tune_nmt_opts(parser)
     args = parser.parse_args()
 
+    utils.setup_ddp(args)
+
     utils.set_random_seed(args.seed)
     run_nmt(args)
+
+    if args.ddp:
+        dist.destroy_process_group()
 
 
 if __name__ == '__main__':

@@ -10,16 +10,20 @@ from tokenizers import Tokenizer
 import wandb
 
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
-from bart import opts, utils
+import bart.opts as opts
+import bart.utils as utils
 from bart.constants import SpecialToken
 from bart.models import (
     BartConfig,
     BartForGeneration,
     LayerNormalization,
 )
-from bart.trainer import Trainer, TrainingArguments
+from bart.trainer import Trainer, TrainingArguments, AverageMeter
 
 
 def train_model(args: argparse.Namespace):
@@ -40,18 +44,25 @@ def train_model(args: argparse.Namespace):
     # TODO: check if raw_dataset contains 'train' and 'test' split
     assert 'train' in raw_dataset and 'test' in raw_dataset
 
-    # creating data loaders
+    # creating samplers, data loaders
     raw_dataset = raw_dataset.with_format('torch')
+    train_sampler = None
+    test_sampler = None
+    if args.ddp:
+        train_sampler = DistributedSampler(raw_dataset['train'], shuffle=True, seed=args.seed)
+        test_sampler = DistributedSampler(raw_dataset['test'], shuffle=False, seed=args.seed)
     train_data_loader = DataLoader(
         raw_dataset['train'],
         batch_size=args.train_batch_size,
-        shuffle=True,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
         pin_memory=True,
     )
     test_data_loader = DataLoader(
         raw_dataset['test'],
         batch_size=args.eval_batch_size,
         shuffle=False,
+        sampler=test_sampler,
         pin_memory=True,
     )
 
@@ -59,10 +70,13 @@ def train_model(args: argparse.Namespace):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     device = torch.device(device)
     use_fp16 = args.fp16 and device.type == 'cuda'
+    if args.is_master:
+        print('Training with mixed precision fp16')
 
     checkpoint_states = None
     if args.from_checkpoint is None:
-        print('Starting training from scratch')
+        if args.is_master:
+            print('Starting training from scratch')
         bart_config = BartConfig(
             src_pad_token_id=src_tokenizer.token_to_id(SpecialToken.PAD),
             target_pad_token_id=target_tokenizer.token_to_id(SpecialToken.PAD),
@@ -90,7 +104,8 @@ def train_model(args: argparse.Namespace):
             pooler_activation=args.pooler_activation,
         )
     else:
-        print(f'Loading states from checkpoint {args.from_checkpoint}')
+        if args.is_master:
+            print(f'Loading states from checkpoint {args.from_checkpoint}')
 
         checkpoint_states = torch.load(args.from_checkpoint, map_location=device)
         required_keys = ['model', 'optimizer', 'lr_scheduler', 'config']
@@ -105,9 +120,15 @@ def train_model(args: argparse.Namespace):
     # model, optimizer, lr_scheduler, scaler
     model = BartForGeneration(bart_config)
     model.to(device)
+
+    # convert model for distributed data parallel training
+    raw_model = model
+    if args.ddp:
+        model = DDP(model, device_ids=[args.local_rank], output_device=args.local_rank)
+
     learning_rate = args.learning_rate
     optimizer = utils.make_optimizer(
-        model,
+        raw_model,
         args.optim,
         learning_rate=learning_rate,
         weight_decay=args.weight_decay,
@@ -124,16 +145,19 @@ def train_model(args: argparse.Namespace):
     scaler = torch.cuda.amp.GradScaler(enabled=use_fp16)
 
     initial_global_step = 0
-    initial_accum_train_loss = 0.0
+    initial_running_loss = None
     if checkpoint_states is not None:
-        model.load_state_dict(checkpoint_states['model'])
+        raw_model.load_state_dict(checkpoint_states['model'])
         optimizer.load_state_dict(checkpoint_states['optimizer'])
         lr_scheduler.load_state_dict(checkpoint_states['lr_scheduler'])
         scaler.load_state_dict(checkpoint_states['scaler'])
         if 'global_step' in checkpoint_states:
             initial_global_step = checkpoint_states['global_step']
-        if 'accum_train_loss' in checkpoint_states:
-            initial_accum_train_loss = checkpoint_states['accum_train_loss']
+        if 'running_loss' in checkpoint_states:
+            if args.ddp:
+                initial_running_loss = AverageMeter(**checkpoint_states['running_loss'][args.rank])
+            else:
+                initial_running_loss = AverageMeter(**checkpoint_states['running_loss'])
 
     # training arguments
     training_args = TrainingArguments(
@@ -149,17 +173,23 @@ def train_model(args: argparse.Namespace):
         label_smoothing=args.label_smoothing,
         max_grad_norm=args.max_grad_norm,
         initial_global_step=initial_global_step,
-        initial_accum_train_loss=initial_accum_train_loss,
+        initial_running_loss=initial_running_loss,
         beam_size=args.beam_size,
         beam_return_topk=args.beam_return_topk,
         log_sentences=args.log_sentences,
         log_sentences_interval=args.log_sentences_interval,
         compute_bleu_max_steps=args.compute_bleu_max_steps,
+        ddp=args.ddp,
+        is_master=args.is_master,
+        rank=args.rank,
+        local_rank=args.local_rank,
+        master_rank=args.master_rank,
+        world_size=args.world_size,
     )
 
     # wandb
     wb_run = None
-    if not args.disable_wandb:
+    if not args.disable_wandb and args.is_master:
         all_config = vars(bart_config) | vars(training_args)
         wb_run = wandb.init(
             project=args.project_name,
@@ -181,8 +211,9 @@ def train_model(args: argparse.Namespace):
         scaler=scaler,
         wb_run=wb_run,
     )
-    print(f'Model has {model.num_params()} parameters')
-    trainer.train(train_data_loader, test_data_loader)
+    if args.is_master:
+        print(f'Model has {model.num_params()} parameters')
+    trainer.train(train_data_loader, test_data_loader, train_sampler=train_sampler)
 
 def main():
     parser = argparse.ArgumentParser(
@@ -192,8 +223,13 @@ def main():
     opts.pretrain_opts(parser)
     args = parser.parse_args()
 
+    utils.setup_ddp(args)
+
     utils.set_random_seed(args.seed)
     train_model(args)
+
+    if args.ddp:
+        dist.destroy_process_group()
 
 
 if __name__ == '__main__':

@@ -58,7 +58,7 @@ def train_tokenizer(
 def build_tokenizer(
     data_files: str | list[str],
     vocab_size: int,
-    min_freq: int = 1,
+    min_freq: int = 2,
     lowercase: bool = False,
     save_path: str | None = None,
 ) -> Tokenizer:

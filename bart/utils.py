@@ -1,3 +1,4 @@
+import argparse
 import math
 import os
 import random
@@ -5,7 +6,7 @@ import re
 import regex
 import unicodedata
 import yaml
-from typing import Callable, Literal, Any
+from typing import Any, Callable, Literal
 
 import numpy as np
 
@@ -13,6 +14,7 @@ import datasets
 from tokenizers import Tokenizer
 
 import torch
+import torch.distributed as dist
 from torch import nn
 from torch.utils.data import DataLoader
 
@@ -32,6 +34,38 @@ def load_yaml_config(config_path: str):
     with open(config_path) as config_file:
         config = yaml.safe_load(config_file)
     return config
+
+def setup_ddp(args: argparse.Namespace) -> None:
+    args.rank = int(os.environ.get('RANK', -1))
+    args.ddp = args.rank != -1
+    args.master_rank = 0 if args.ddp else -1
+    args.is_master = args.rank == args.master_rank
+    if args.ddp:
+        args.local_rank = int(os.environ['LOCAL_RANK'])
+        args.world_size = int(os.environ['WORLD_SIZE'])
+
+        # set appropriate CUDA device
+        torch.cuda.set_device(args.local_rank)
+
+        # init process group
+        dist.init_process_group(backend=getattr(args, 'ddp_backend', 'nccl'))  # nccl, gloo, etc
+
+        # we need to divide the batch_size for batching across multiple-GPUs manually
+        for key in ('train_batch_size', 'eval_batch_size'):
+            assert getattr(args, key) % args.world_size == 0
+            setattr(args, key, getattr(args, key) // args.world_size)
+            if args.is_master:
+                if key == 'train_batch_size' and args.accum_step > 1:
+                    print(
+                        f'{key} per GPU is {getattr(args, key)} '
+                        f'(with gradient accum steps = {args.accum_step})'
+                    )
+                else:
+                    print(f'{key} per GPU is {getattr(args, key)}')
+
+        # add offset for seed
+        setattr(args, 'seed', getattr(args, 'seed') + args.rank)
+        print(f'Training with seed {args.seed} on rank {args.rank}')
 
 def chunks(data: list[Any] | str, chunk_size: int = 1_000):
     for i in range(0, len(data), chunk_size):
@@ -137,42 +171,6 @@ def make_optimizer(
         raise ValueError(f'Unsupported optimizer type: {optim_type}. Possible values are: adam, adamw')
 
     return optimizer
-
-def make_bilingual_data_loader(
-    dataset: datasets.Dataset,
-    src_tokenizer: Tokenizer,
-    target_tokenizer: Tokenizer,
-    src_seq_length: int,
-    target_seq_length: int,
-    batch_size: int,
-    *,
-    source_key: str = 'source',
-    target_key: str = 'target',
-    add_padding_tokens: bool = False,
-    include_source_target_text: bool = False,
-    shuffle: bool = False,
-    pin_memory: bool = False,
-    collate_fn: Callable | None = None,
-) -> DataLoader:
-    bilingual_dataset = BilingualDataset(
-        dataset,
-        src_tokenizer,
-        target_tokenizer,
-        src_seq_length,
-        target_seq_length,
-        source_key=source_key,
-        target_key=target_key,
-        add_padding_tokens=add_padding_tokens,
-        include_source_target_text=include_source_target_text,
-    )
-    bilingual_data_loader = DataLoader(
-        bilingual_dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        pin_memory=pin_memory,
-        collate_fn=collate_fn,
-    )
-    return bilingual_data_loader
 
 def get_param_names(
     module: nn.Module,
