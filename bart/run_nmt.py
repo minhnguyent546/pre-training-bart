@@ -18,16 +18,17 @@ from torch.utils.data.distributed import DistributedSampler
 import bart.models.utils as model_utils
 import bart.opts as opts
 import bart.utils as utils
-from bart.bilingual_dataset import CollatorWithPadding, BilingualDataset
+from bart.bilingual_dataset import BilingualDataset, CollatorWithPadding
 from bart.compute_bleu import compute_dataset_bleu
 from bart.constants import SpecialToken
+from bart.meters import AverageMeter
 from bart.models import (
     BartConfig,
     BartForNMT,
     BartForNMTConfig,
     LayerNormalization,
 )
-from bart.trainer import Trainer, TrainingArguments, AverageMeter
+from bart.trainer import Trainer, TrainingArguments
 
 
 def run_nmt(args: argparse.Namespace):
@@ -197,27 +198,30 @@ def run_nmt(args: argparse.Namespace):
         raw_model.load_state_dict(checkpoint_states['model'])
 
     if getattr(args, 'do_test', False):
-        test_results = model_utils.eval_model(model, test_data_loader, device)
+        test_results = model_utils.eval_model(model, test_data_loader, device, args)
 
-        # TODO: make compute_data_bleu run on multiple GPUs
+        to_compute_dataset = test_data_loader.dataset
+        if args.ddp:
+            to_compute_dataset = to_compute_dataset.select(range(args.rank, len(to_compute_dataset), args.world_size))
+        test_bleu = compute_dataset_bleu(
+            raw_model,
+            to_compute_dataset,
+            src_tokenizer,
+            target_tokenizer,
+            bart_for_nmt_config.target_seq_length,
+            args,
+            beam_size=args.beam_size,
+            beam_return_topk=args.beam_return_topk,
+            log_sentences=args.log_sentences,
+            logging_interval=args.log_sentences_interval,
+            max_steps=args.compute_bleu_max_steps,
+        )
         if args.is_master:
-            test_bleu = compute_dataset_bleu(
-                raw_model,
-                test_data_loader.dataset,
-                src_tokenizer,
-                target_tokenizer,
-                bart_for_nmt_config.target_seq_length,
-                beam_size=args.beam_size,
-                beam_return_topk=args.beam_return_topk,
-                log_sentences=args.log_sentences,
-                logging_interval=args.log_sentences_interval,
-                max_steps=args.compute_bleu_max_steps,
-            )
             print('*** Test result ***')
             print(f'Test loss: {test_results["loss"]:.3f}')
             print(f'Test BLEU: {test_bleu:.3f}')
             print(f'Test perplexity: {utils.get_perplexity(test_results["loss"]):.3f}')
-            return
+        return
 
     learning_rate = args.learning_rate
     optimizer = utils.make_optimizer(
@@ -311,7 +315,7 @@ def run_nmt(args: argparse.Namespace):
         wb_run=wb_run,
     )
     if args.is_master:
-        print(f'Model has {model.num_params()} parameters')
+        print(f'Model has {raw_model.num_params()} parameters')
     trainer.train(train_data_loader, validation_data_loader, train_sampler=train_sampler)
 
 def main():

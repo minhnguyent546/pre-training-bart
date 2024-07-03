@@ -1,3 +1,4 @@
+import argparse
 import glob
 import os
 from operator import itemgetter
@@ -12,6 +13,7 @@ from torch.utils.data import DataLoader
 from tokenizers import Tokenizer
 
 from bart.constants import SpecialToken
+from bart.meters import AverageMeter
 
 
 def get_activation(act_type: str) -> nn.Module:
@@ -91,12 +93,20 @@ def eval_model(
     model,
     eval_data_loader: DataLoader,
     device: torch.device,
+    args: argparse.Namespace,
 ) -> dict[str, float]:
+    evaluation_loss = AverageMeter('evaluation_loss', device=device)
+    if args.ddp:
+        batch_iter = tqdm(
+            eval_data_loader,
+            desc=f'Evaluating model on rank {args.rank}',
+            disable=args.local_rank != 0,
+        )
+    else:
+        batch_iter = tqdm(eval_data_loader, desc='Evaluating model')
+
     is_training = model.training
     model.eval()
-
-    accum_valid_loss = 0.0
-    batch_iter = tqdm(eval_data_loader, desc='Evaluating model')
     with torch.no_grad():
         for batch in batch_iter:
             input_ids = batch['input_ids'].to(device).type(torch.int32)
@@ -111,6 +121,7 @@ def eval_model(
             if 'decoder_input_mask' in batch:
                 decoder_input_mask = batch['decoder_input_mask'].to(device).type(torch.int32)
 
+            # TODO: consider using fp16 for evaluation
             outputs = model(
                 encoder_input_ids=input_ids,
                 encoder_attn_mask=input_mask,
@@ -119,15 +130,18 @@ def eval_model(
                 labels=labels,
             )
             loss = outputs.lm_loss
-            accum_valid_loss += loss.item()
+            evaluation_loss.update(loss.item())
 
             batch_iter.set_postfix({'loss': f'{loss.item():0.3f}'})
+            evaluation_loss.update(loss.item())
+
+    if args.ddp:
+        evaluation_loss.reduce(dst=args.master_rank)
 
     model.train(is_training)
 
-    num_iterations = len(eval_data_loader)
     return {
-        'loss': accum_valid_loss / num_iterations,
+        'loss': evaluation_loss.average,
     }
 
 def greedy_search_decode(

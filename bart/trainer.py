@@ -1,9 +1,7 @@
-from __future__ import annotations
-
 import os
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from wandb.sdk.wandb_run import Run as WbRun
 
@@ -18,6 +16,7 @@ from tokenizers import Tokenizer
 
 import bart.models.utils as model_utils
 from bart.compute_bleu import compute_dataset_bleu
+from bart.meters import AverageMeter
 from bart.models import BartBase, BartConfig
 
 
@@ -166,22 +165,24 @@ class Trainer:
     def _valid_step(self, step: int, valid_data_loader: DataLoader):
         if self.args.ddp:
             self.running_loss.reduce(dst=self.args.master_rank)
-        valid_results = model_utils.eval_model(self.model, valid_data_loader, self.device)
-        # TODO: make compute_data_bleu run on multiple GPUs
-        if self.args.is_master:
-            valid_bleu = compute_dataset_bleu(
-                self.model,
-                valid_data_loader.dataset,
-                self.src_tokenizer,
-                self.target_tokenizer,
-                self.bart_config.target_seq_length,
-                beam_size=self.args.beam_size,
-                beam_return_topk=self.args.beam_return_topk,
-                log_sentences=self.args.log_sentences,
-                logging_interval=self.args.log_sentences_interval,
-                max_steps=self.args.compute_bleu_max_steps,
-            )
-            self._maybe_report_valid_step(valid_results, valid_bleu=valid_bleu, step=step)
+        valid_results = model_utils.eval_model(self.model, valid_data_loader, self.device, self.args)
+        to_compute_dataset = valid_data_loader.dataset
+        if self.args.ddp:
+            to_compute_dataset = to_compute_dataset.select(range(self.args.rank, len(to_compute_dataset), self.args.world_size))
+        valid_bleu = compute_dataset_bleu(
+            self.model,
+            to_compute_dataset,
+            self.src_tokenizer,
+            self.target_tokenizer,
+            self.bart_config.target_seq_length,
+            self.args,
+            beam_size=self.args.beam_size,
+            beam_return_topk=self.args.beam_return_topk,
+            log_sentences=self.args.log_sentences,
+            logging_interval=self.args.log_sentences_interval,
+            max_steps=self.args.compute_bleu_max_steps,
+        )
+        self._maybe_report_valid_step(valid_results, valid_bleu=valid_bleu, step=step)
         self.running_loss.reset()
 
     def _save_checkpoint(
@@ -236,62 +237,3 @@ class Trainer:
         }, step=step)
         if valid_bleu is not None:
             self.wb_run.log({'valid_bleu': valid_bleu}, step=step)
-
-class AverageMeter:
-    """A class for working with average meters."""
-    def __init__(
-        self,
-        name: str,
-        value: int | float = 0.0,
-        count: int = 0,
-        sum: int | float = 0.0,
-        device: torch.device | Literal['auto'] = 'auto',
-    ) -> None:
-        if count == 0:
-            value = 0
-            sum = 0
-        self.name = name
-        self.value = value
-        self.count = count
-        self.sum = sum
-        if device == 'auto':
-            device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-        self.device = device
-
-    def update(self, value: int | float, nums: int = 1) -> None:
-        self.value = value
-        self.sum += value * nums
-        self.count += nums
-
-    def reduce(self, dst: int) -> None:
-        meters_to_reduce = torch.tensor([self.sum, self.count], dtype=torch.float32, device=self.device)
-        # only `Tensor` of process with rank `dst` will be modified in-place,
-        # `Tensor` of other processes will remain the same
-        dist.reduce(meters_to_reduce, dst=dst, op=dist.ReduceOp.SUM)
-        self.sum, self.count = meters_to_reduce.tolist()
-
-    def all_reduce(self) -> None:
-        meters_to_reduce = torch.tensor([self.sum, self.count], dtype=torch.float32, device=self.device)
-        dist.all_reduce(meters_to_reduce, op=dist.ReduceOp.SUM)
-        self.sum, self.count = meters_to_reduce.tolist()
-
-    @property
-    def average(self) -> float:
-        try:
-            return self.sum / self.count
-        except ZeroDivisionError:
-            return 0.0
-
-    def reset(self) -> None:
-        self.value = 0.0
-        self.sum = 0.0
-        self.count = 0
-
-    def __repr__(self) -> str:
-        return (
-            f'{self.name}(value={self.value}, '
-            f'average={self.average}, '
-            f'sum={self.sum}, '
-            f'count={self.count}, '
-            f'device={self.device})'
-        )

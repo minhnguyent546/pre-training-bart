@@ -1,7 +1,9 @@
+import argparse
 from tqdm.autonotebook import tqdm
 
 import torch
 from torch import Tensor
+import torch.distributed as dist
 
 import datasets
 import evaluate
@@ -18,6 +20,7 @@ def compute_dataset_bleu(
     src_tokenizer: Tokenizer,
     target_tokenizer: Tokenizer,
     seq_length: int,
+    args: argparse.Namespace,
     beam_size: int | None = None,
     beam_return_topk: int = 1,
     log_sentences: bool = False,
@@ -29,15 +32,25 @@ def compute_dataset_bleu(
     target_text_list = []
     pred_text_list = []
 
-    total_steps = len(dataset)
-    if max_steps is not None:
-        total_steps = min(total_steps, max_steps)
+    if max_steps is None:
+        total_steps = len(dataset)
+    else:
+        if args.ddp:
+            if max_steps % args.world_size != 0:
+                raise ValueError(f'max_steps must be divisible by world_size = {args.world_size}')
+            max_steps //= args.world_size
+        total_steps = min(len(dataset), max_steps)
 
-    dataset_iterator = tqdm(
-        enumerate(dataset),
-        desc='Computing validation BLEU',
-        total=total_steps,
-    )
+    if args.ddp:
+        dataset_iterator = tqdm(
+            dataset,
+            desc=f'Computing validation BLEU on rank {args.rank}',
+            total=total_steps,
+            disable=args.local_rank != 0,
+        )
+    else:
+        dataset_iterator = tqdm(dataset, desc='Computing validation BLEU', total=total_steps)
+
     cand_list = None
     cand_text_list = None
 
@@ -49,7 +62,7 @@ def compute_dataset_bleu(
     ignored_tokens = [SpecialToken.SOS, SpecialToken.EOS, SpecialToken.PAD, SpecialToken.UNK]
 
     with torch.no_grad():
-        for item_idx, item in dataset_iterator:
+        for item_idx, item in enumerate(dataset_iterator):
             if item_idx >= total_steps:
                 break
 
@@ -140,22 +153,40 @@ def compute_dataset_bleu(
             if log_sentences and item_idx % logging_interval == 0:
                 bleu_score = sacrebleu.compute(predictions=[pred_text], references=[target_text])
 
-                dataset_iterator.write(f'Source: {source_text}')
-                dataset_iterator.write(f'Target: {target_text}')
-                if cand_text_list is not None:
-                    for cand_text_idx, cand_text in enumerate(cand_text_list):
-                        dataset_iterator.write(f'Predicted-{cand_text_idx + 1}: {cand_text}')
-                else:
-                    dataset_iterator.write(f'Predicted: {pred_text}')
+                if not args.ddp or args.local_rank == 0:
+                    dataset_iterator.write(f'Source: {source_text}')
+                    dataset_iterator.write(f'Target: {target_text}')
+                    if cand_text_list is not None:
+                        for cand_text_idx, cand_text in enumerate(cand_text_list):
+                            dataset_iterator.write(f'Predicted-{cand_text_idx + 1}: {cand_text}')
+                    else:
+                        dataset_iterator.write(f'Predicted: {pred_text}')
 
-                dataset_iterator.write(f'BLEU: {bleu_score["score"]:0.3f}')
-
-    dataset_blue_score = sacrebleu.compute(
-        predictions=pred_text_list,
-        references=target_text_list,
-    )
+                    dataset_iterator.write(f'BLEU: {bleu_score["score"]:0.3f}')
 
     # set model back to training mode
     model.train(is_training)
 
-    return dataset_blue_score['score']
+    if args.ddp:
+        gathered_object = [None for _ in range(args.world_size)] if args.is_master else None
+        dist.gather_object(
+            {'predictions': pred_text_list, 'references': target_text_list},
+            gathered_object,
+            dst=args.master_rank,
+        )
+        if args.is_master:
+            assert gathered_object is not None
+            pred_text_list = []
+            target_text_list = []
+            for obj in gathered_object:
+                pred_text_list.extend(obj['predictions'])
+                target_text_list.extend(obj['references'])
+
+    if args.is_master:
+        dataset_blue_score = sacrebleu.compute(
+            predictions=pred_text_list,
+            references=target_text_list,
+        )
+        return dataset_blue_score['score']
+
+    return 0.0

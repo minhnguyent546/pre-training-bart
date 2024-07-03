@@ -18,12 +18,13 @@ from torch.utils.data.distributed import DistributedSampler
 import bart.opts as opts
 import bart.utils as utils
 from bart.constants import SpecialToken
+from bart.meters import AverageMeter
 from bart.models import (
     BartConfig,
     BartForGeneration,
     LayerNormalization,
 )
-from bart.trainer import Trainer, TrainingArguments, AverageMeter
+from bart.trainer import Trainer, TrainingArguments
 
 
 def train_model(args: argparse.Namespace):
@@ -212,7 +213,7 @@ def train_model(args: argparse.Namespace):
         wb_run=wb_run,
     )
     if args.is_master:
-        print(f'Model has {model.num_params()} parameters')
+        print(f'Model has {raw_model.num_params()} parameters')
     trainer.train(train_data_loader, test_data_loader, train_sampler=train_sampler)
 
 def main():
