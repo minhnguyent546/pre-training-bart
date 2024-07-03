@@ -197,7 +197,7 @@ class Trainer:
         if self.args.is_master:
             checkpoint_dict = {
                 'global_step': global_step,
-                'model': self.model.state_dict(),
+                'model': self.model.state_dict() if not self.args.ddp else self.model.module.state_dict(),
                 'optimizer': self.optimizer.state_dict(),
                 'lr_scheduler': self.lr_scheduler.state_dict(),
                 'scaler': self.scaler.state_dict(),
