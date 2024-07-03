@@ -430,16 +430,10 @@ def _add_fine_tune_nmt_opts(parser: argparse.ArgumentParser) -> None:
         action='store_true',
     )
     group.add_argument(
-        '--foreign-encoder-num-layers',
+        '--foreign-encoder-num-hidden-layers',
         help='Number of layers in the foreign encoder',
         type=int,
         default=6,
-    )
-    group.add_argument(
-        '--foreign-encoder-num-heads',
-        help='Number of heads in the foreign encoder',
-        type=int,
-        default=8,
     )
 
 def _add_compute_valid_bleu_opts(parser):

@@ -26,8 +26,7 @@ class BartConfig(TransformerConfig):
 
 @dataclass
 class BartForNMTConfig(BartConfig):
-    foreign_encoder_num_layers: int = 6
-    foreign_encoder_num_heads: int = 8
+    foreign_encoder_num_hidden_layers: int = 6
 
 @dataclass
 class BartForGenerationOutput(TransformerOutput):
@@ -96,14 +95,17 @@ class BertEncoderForForeignLanguage(TransformerEncoder):
         self.layers = nn.ModuleList([
             TransformerEncoderLayer(
                 config.hidden_size,
-                config.foreign_encoder_num_heads,
+                config.encoder_num_heads,
                 config.intermediate_size,
                 config.activation,
+                config.encoder_attn_impl,
+                num_kv_heads=config.encoder_num_kv_heads,
                 pre_norm=config.pre_norm,
                 dropout=config.dropout,
                 attn_dropout=config.attn_dropout,
+                attn_window_size=config.encoder_attn_window_size,
             )
-            for _ in range(config.foreign_encoder_num_layers)
+            for _ in range(config.foreign_encoder_num_hidden_layers)
         ])
 
     def forward(

@@ -2,16 +2,21 @@
 A standard transformer model as in Vaswani et al. (2017).
 """
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 from typing import TypeAlias
 
+import torch
 from torch import Tensor
 from torch import nn
-import torch
-from torch.nn import functional as F
 
 import bart.models.utils as model_utils
+from bart.models.attentions import (
+    AttnImpl,
+    additive_attention,
+    dot_product_attention,
+    loop_sliding_window_attention,
+)
 from bart.models.utils import initialize_bert_params_fn
 
 
@@ -34,9 +39,14 @@ class TransformerConfig:
     hidden_size: int = 512
     intermediate_size: int = 512 * 4
     encoder_num_heads: int = 8
+    encoder_num_kv_heads: int | None = None  # it should be `None` or equal to `encoder_num_heads` as it does not effect too much in training time
     encoder_num_hidden_layers: int = 6
+    encoder_attn_impl: str = 'scaled_dot_product'
+    encoder_attn_window_size: int | None = None
     decoder_num_heads: int = 8
+    decoder_num_kv_heads: int | None = None
     decoder_num_hidden_layers: int = 6
+    decoder_attn_impl: str = 'scaled_dot_product'
     dropout: float = 0.1
     attn_dropout: float = 0.1
     activation: str = 'gelu'
@@ -117,30 +127,56 @@ class FeedForward(nn.Module):
         return x
 
 class MultiHeadAttention(nn.Module):
-    """A standard scaled dot-product attention."""
+    """
+    A multi-head attention module which supports various types of
+    attention mechanisms and grouped-query attention.
+    """
     def __init__(
         self,
         hidden_size: int,
         num_heads: int,
         attn_dropout: float,
+        attn_impl: str | AttnImpl = AttnImpl.SCALED_DOT_PRODUCT,
+        num_kv_heads: int | None = None,
         is_decoder: bool = False,
+        attn_window_size: int | None = None
     ):
         super().__init__()
-        if not hidden_size % num_heads == 0:
+        if hidden_size % num_heads != 0:
             raise ValueError(
                 f'The hidden size {hidden_size} is not divisible by '
                 f'the number of attention heads {num_heads}'
             )
+        if num_kv_heads is not None and num_heads % num_kv_heads != 0:
+            raise ValueError('Expected `num_heads` is divisible by `num_kv_heads`')
+        if attn_impl not in AttnImpl:
+            raise ValueError(
+                f'Unknown AttnType value: {attn_impl}. '
+                f'Possible values are: {', '.join(AttnImpl.list())}')
+        if attn_impl == AttnImpl.SLIDING_WINDOW:
+            if attn_window_size is None:
+                raise ValueError('When using sliding window attention, `attn_window_size` must be provided')
+            assert is_decoder == False
+            if attn_window_size % 2 == 0 or attn_window_size <= 0:
+                raise ValueError('Please provide a positive odd number `attn_window_size`')
 
         self.hidden_size = hidden_size
         self.num_heads = num_heads
-        self.head_dim = hidden_size // num_heads
+        self.attn_impl = attn_impl
         self.attn_dropout = attn_dropout
+        self.num_kv_heads = num_heads if num_kv_heads is None else num_kv_heads
         self.is_decoder = is_decoder
-        self.w_q = nn.Linear(hidden_size, hidden_size)
-        self.w_k = nn.Linear(hidden_size, hidden_size)
-        self.w_v = nn.Linear(hidden_size, hidden_size)
-        self.w_o = nn.Linear(hidden_size, hidden_size)
+        self.attn_window_size = attn_window_size
+
+        self.head_dim = hidden_size // num_heads
+        if self.attn_impl == AttnImpl.ADDITIVE:
+            self.w_a = nn.Linear(self.hidden_size, 1)
+        self.num_kv_replicas = self.num_heads // self.num_kv_heads
+
+        self.w_q = nn.Linear(self.hidden_size, self.num_heads * self.head_dim)
+        self.w_k = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim)
+        self.w_v = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim)
+        self.w_o = nn.Linear(self.num_heads * self.head_dim, hidden_size)
 
     def forward(
         self,
@@ -153,7 +189,7 @@ class MultiHeadAttention(nn.Module):
         batch_size = x.shape[0]
         is_cross_attention = kv_states is not None
 
-        query = self._reshape_for_mha(self.w_q(x), batch_size)
+        query = self._reshape_for_mha(self.w_q(x), batch_size, self.num_heads)
         if is_cross_attention and kv_cache is not None:
             # cross attention with cache
             # check if seq_lengths are equal
@@ -161,36 +197,73 @@ class MultiHeadAttention(nn.Module):
             key, value = kv_cache
         elif is_cross_attention:
             # cross-attention
-            key = self._reshape_for_mha(self.w_k(kv_states), batch_size)
-            value = self._reshape_for_mha(self.w_v(kv_states), batch_size)
+            key = self._reshape_for_mha(self.w_k(kv_states), batch_size, self.num_kv_heads)
+            value = self._reshape_for_mha(self.w_v(kv_states), batch_size, self.num_kv_heads)
         elif kv_cache is not None:
             # self-attention with cache
-            cur_key = self._reshape_for_mha(self.w_k(x), batch_size)
-            cur_value = self._reshape_for_mha(self.w_v(x), batch_size)
+            cur_key = self._reshape_for_mha(self.w_k(x), batch_size, self.num_kv_heads)
+            cur_value = self._reshape_for_mha(self.w_v(x), batch_size, self.num_kv_heads)
             key = torch.cat([kv_cache[0], cur_key], dim=2)
             value = torch.cat([kv_cache[1], cur_value], dim=2)
         else:
             # self-attention
-            key = self._reshape_for_mha(self.w_k(x), batch_size)
-            value = self._reshape_for_mha(self.w_v(x), batch_size)
+            key = self._reshape_for_mha(self.w_k(x), batch_size, self.num_kv_heads)
+            value = self._reshape_for_mha(self.w_v(x), batch_size, self.num_kv_heads)
 
         if self.is_decoder:
             # kv_cache is always `None` in encoder
             kv_cache = (key, value)
 
-        output = scaled_dot_product_attention(
-            query,
-            key,
-            value,
-            attn_mask=attn_mask,
-            attn_dropout=self.attn_dropout,
-        )
+        key = self._repeat_kv(key)
+        value = self._repeat_kv(value)
+
+        # attention mechanisms
+        if self.attn_impl == AttnImpl.DOT_PRODUCT:
+            output = dot_product_attention(
+                query, key, value, scale=False,
+                attn_mask=attn_mask, attn_dropout=self.attn_dropout,
+            )
+        elif self.attn_impl == AttnImpl.SCALED_DOT_PRODUCT:
+            output = dot_product_attention(
+                query, key, value, scale=True,
+                attn_mask=attn_mask, attn_dropout=self.attn_dropout,
+            )
+        elif self.attn_impl == AttnImpl.SLIDING_WINDOW:
+            output = loop_sliding_window_attention(
+                query, key, value, attn_window_size=self.attn_window_size,
+                attn_mask=attn_mask, attn_dropout=self.attn_dropout,
+            )
+        elif self.attn_impl == AttnImpl.ADDITIVE:
+            output = additive_attention(
+                query, key, value, self.w_a,
+                attn_mask=attn_mask, attn_dropout=self.attn_dropout,
+            )
+        else:
+            raise ValueError(f'Expected attn_type is an AttnType, but got {type(self.attn_impl)}')
+
         output = output.transpose(1, 2).contiguous().view(batch_size, -1, self.hidden_size)
         output = self.w_o(output)
         return output, kv_cache
 
-    def _reshape_for_mha(self, x: Tensor, batch_size: int, seq_length: int = -1) -> Tensor:
-        return x.view(batch_size, seq_length, self.num_heads, self.head_dim).transpose(1, 2)
+    def _reshape_for_mha(
+        self,
+        x: Tensor,
+        batch_size: int,
+        num_heads: int,
+        seq_length: int = -1,
+    ) -> Tensor:
+        return x.view(batch_size, seq_length, num_heads, self.head_dim).transpose(1, 2).contiguous()
+
+    def _repeat_kv(self, x: torch.Tensor) -> torch.Tensor:
+        if self.num_kv_replicas <= 1:
+            return x
+
+        # x:  (batch_size, num_kv_heads, seq_length, head_dim)
+        batch_size, num_kv_heads, seq_length, head_dim = x.shape
+        x = x.unsqueeze(2)  # (batch_size, num_kv_heads, 1, seq_length, head_dim)
+        x = x.expand(batch_size, num_kv_heads, self.num_replicas, seq_length, head_dim)
+        x = x.reshape(batch_size, num_kv_heads * self.num_replicas, seq_length, head_dim)
+        return x
 
 class TransformerEncoderLayer(nn.Module):
     def __init__(
@@ -199,15 +272,21 @@ class TransformerEncoderLayer(nn.Module):
         num_heads: int,
         intermediate_size: int,
         activation: str,
+        attn_impl: str,
+        num_kv_heads: int | None = None,
         pre_norm: bool = False,
         dropout: float = 0.1,
         attn_dropout: float = 0.1,
+        attn_window_size: int | None = None,
     ):
         super().__init__()
         self.self_attention = MultiHeadAttention(
             hidden_size,
             num_heads,
             attn_dropout,
+            attn_impl=attn_impl,
+            num_kv_heads=num_kv_heads,
+            attn_window_size=attn_window_size,
         )
         self.feed_forward = FeedForward(
             hidden_size,
@@ -254,6 +333,8 @@ class TransformerDecoderLayer(nn.Module):
         num_heads: int,
         intermediate_size: int,
         activation: str,
+        attn_impl: str,
+        num_kv_heads: int | None = None,
         pre_norm: bool = False,
         dropout: float = 0.1,
         attn_dropout: float = 0.1,
@@ -263,12 +344,16 @@ class TransformerDecoderLayer(nn.Module):
             hidden_size,
             num_heads,
             attn_dropout,
+            attn_impl=attn_impl,
+            num_kv_heads=num_kv_heads,
             is_decoder=True,
         )
         self.cross_attention = MultiHeadAttention(
             hidden_size,
             num_heads,
             attn_dropout,
+            attn_impl=attn_impl,
+            num_kv_heads=num_kv_heads,
             is_decoder=True,
         )
         self.feed_forward = FeedForward(
@@ -356,9 +441,12 @@ class TransformerEncoder(nn.Module):
                 config.encoder_num_heads,
                 config.intermediate_size,
                 config.activation,
+                config.encoder_attn_impl,
+                num_kv_heads=config.encoder_num_kv_heads,
                 pre_norm=config.pre_norm,
                 dropout=config.dropout,
                 attn_dropout=config.attn_dropout,
+                attn_window_size=config.encoder_attn_window_size,
             )
             for _ in range(config.encoder_num_hidden_layers)
         ])
@@ -406,6 +494,8 @@ class TransformerDecoder(nn.Module):
                 config.decoder_num_heads,
                 config.intermediate_size,
                 config.activation,
+                config.decoder_attn_impl,
+                num_kv_heads=config.decoder_num_kv_heads,
                 pre_norm=config.pre_norm,
                 dropout=config.dropout,
                 attn_dropout=config.attn_dropout,
@@ -534,29 +624,3 @@ class Transformer(TransformerBase):
             decoder_output=decoder_output,
             kv_caches=new_kv_caches,
         )
-
-def scaled_dot_product_attention(
-    query: Tensor,
-    key: Tensor,
-    value: Tensor,
-    attn_mask: Tensor | None = None,
-    attn_dropout: float | nn.Dropout | None = None,
-) -> Tensor:
-    if attn_mask is not None and attn_mask.dim() != 4:
-        raise ValueError(
-            f'Expected attn_mask is a 4D tensor, got a tensor with shape: {tuple(attn_mask.shape)}'
-        )
-
-    head_dim = query.size(-1)
-    attention_probs = (query @ key.transpose(-2, -1)) / math.sqrt(head_dim)
-    if attn_mask is not None:
-        attention_probs.masked_fill_(attn_mask == False, float('-inf'))
-
-    attention_probs = F.softmax(attention_probs, dim=-1)
-    if attn_dropout is not None:
-        if isinstance(attn_dropout, float):
-            attn_dropout = nn.Dropout(attn_dropout)
-        attention_probs = attn_dropout(attention_probs)
-
-    output = attention_probs @ value
-    return output
