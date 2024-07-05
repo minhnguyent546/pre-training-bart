@@ -73,6 +73,7 @@ def load_dataset_from_files(
     test_size: int | None = None,
     validation_size: int | None = None,
     seed: int = 1061109567,
+    num_workers: int | None = None,
     **kwargs,
 ) -> datasets.DatasetDict:
     """
@@ -87,6 +88,7 @@ def load_dataset_from_files(
     raw_dataset: datasets.DatasetDict = datasets.load_dataset(
         data_file_format,
         data_files=data_files,
+        num_proc=num_workers,
         **kwargs,
     )
     if 'train' in raw_dataset and 'test' not in raw_dataset:

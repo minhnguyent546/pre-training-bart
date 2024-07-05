@@ -47,6 +47,7 @@ def run_nmt(args: argparse.Namespace):
         validation_size=args.validation_size,
         seed=args.split_dataset_seed,
         field=args.field,
+        num_workers=args.num_workers,
     )
 
     # creating data bilingual datasets, samplers, and data loaders
@@ -66,6 +67,7 @@ def run_nmt(args: argparse.Namespace):
             train_dataset,
             batch_size=args.train_batch_size, shuffle=(train_sampler is None),
             sampler=train_sampler, pin_memory=True, collate_fn=data_collator,
+            num_workers=0 if args.num_workers is None else args.num_workers,
         )
     if 'validation' in raw_dataset:
         validation_dataset = BilingualDataset(
@@ -78,6 +80,7 @@ def run_nmt(args: argparse.Namespace):
             validation_dataset,
             batch_size=args.eval_batch_size, shuffle=False,
             sampler=validation_sampler, pin_memory=True, collate_fn=data_collator,
+            num_workers=0 if args.num_workers is None else args.num_workers,
         )
     if 'test' in raw_dataset:
         test_dataset = BilingualDataset(
@@ -89,7 +92,8 @@ def run_nmt(args: argparse.Namespace):
         test_data_loader = DataLoader(
             test_dataset,
             batch_size=args.eval_batch_size, shuffle=False,
-            sampler=test_sampler, pin_memory=True, collate_fn=data_collator,
+            sampler=test_sampler, num_workers=args.num_workers,
+            pin_memory=True, collate_fn=data_collator,
         )
 
     if getattr(args, 'do_test', False):

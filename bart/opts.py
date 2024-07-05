@@ -104,6 +104,11 @@ def _add_dataset_opts(parser: argparse.ArgumentParser) -> None:
         help='Field that contains the dataset in case of json files',
         type=str,
     )
+    group.add_argument(
+        '--num-workers',
+        help='Number of workers using in load_dataset, DataLoader, etc',
+        type=int,
+    )
 
 def _add_model_opts(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group('Model')

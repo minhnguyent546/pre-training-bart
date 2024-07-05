@@ -41,6 +41,7 @@ def train_model(args: argparse.Namespace):
         validation_size=args.validation_size,
         seed=args.split_dataset_seed,
         field=args.field,
+        num_workers=args.num_workers,
     )
     # TODO: check if raw_dataset contains 'train' and 'test' split
     assert 'train' in raw_dataset and 'test' in raw_dataset
@@ -57,6 +58,7 @@ def train_model(args: argparse.Namespace):
         batch_size=args.train_batch_size,
         shuffle=(train_sampler is None),
         sampler=train_sampler,
+        num_workers=0 if args.num_workers is None else args.num_workers,
         pin_memory=True,
     )
     test_data_loader = DataLoader(
@@ -64,6 +66,7 @@ def train_model(args: argparse.Namespace):
         batch_size=args.eval_batch_size,
         shuffle=False,
         sampler=test_sampler,
+        num_workers=0 if args.num_workers is None else args.num_workers,
         pin_memory=True,
     )
 
