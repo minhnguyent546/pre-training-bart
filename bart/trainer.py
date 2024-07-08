@@ -1,4 +1,5 @@
 import os
+import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
@@ -93,14 +94,32 @@ class Trainer:
         self.model.train()
 
         global_step = self.args.initial_global_step
-        train_progress_bar = tqdm(range(global_step, self.args.train_steps), desc='Training model')
+        if self.args.ddp:
+            train_progress_bar = tqdm(
+                range(global_step, self.args.train_steps),
+                desc=f'GPU{self.args.rank} - Training model',
+                ncols=120,
+                disable=self.args.local_rank != 0,
+            )
+        else:
+            train_progress_bar = tqdm(
+                range(global_step, self.args.train_steps),
+                desc='Training model',
+                ncols=120,
+            )
+
+        num_tokens_per_second = self.args.train_batch_size * self.args.accum_step * self.bart_config.src_seq_length
         batch_loss = 0.0
+        batch_fb_time = 0.0  # batch forward + backward pass time
         while global_step < self.args.train_steps:
             torch.cuda.empty_cache()
             if train_sampler is not None:
                 train_sampler.set_epoch(global_step // len(train_data_loader))
 
             for batch_idx, batch in enumerate(train_data_loader):
+                self.optimizer.zero_grad()
+
+                ts = time.monotonic()
                 input_ids = batch['input_ids'].to(self.device).type(torch.int32)
                 labels = batch['labels'].to(self.device).type(torch.int64)
                 input_mask = None
@@ -112,8 +131,6 @@ class Trainer:
                     decoder_input_ids = batch['decoder_input_ids'].to(self.device).type(torch.int32)
                 if 'decoder_input_mask' in batch:
                     decoder_input_mask = batch['decoder_input_mask'].to(self.device).type(torch.int32)
-
-                self.optimizer.zero_grad()
 
                 with self.autocast_ctx:
                     outputs = self.model(
@@ -135,6 +152,7 @@ class Trainer:
 
                 # accumulates scaled gradients
                 self.scaler.scale(loss).backward()
+                batch_fb_time += time.monotonic() - ts
 
                 if (batch_idx + 1) % self.args.accum_step == 0 or batch_idx + 1 == len(train_data_loader):
                     if self.args.max_grad_norm > 0:
@@ -144,12 +162,19 @@ class Trainer:
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
 
-                    self._maybe_report_step(batch_loss, step=global_step)
+                    batch_throughput = num_tokens_per_second / batch_fb_time
+                    if self.args.ddp:
+                        batch_throughput *= self.args.world_size
+                    self._maybe_report_step(batch_loss, batch_throughput, step=global_step)
                     self.lr_scheduler.step()
 
-                    train_progress_bar.set_postfix({'loss': f'{batch_loss:0.3f}'})
+                    train_progress_bar.set_postfix({
+                        'loss': f'{batch_loss:0.3f}',
+                        'throughput': f'{batch_throughput:0.1f} tokens/s',
+                    })
                     self.running_loss.update(batch_loss)
                     batch_loss = 0.0
+                    batch_fb_time = 0.0
 
                     if (global_step + 1) % self.args.valid_interval == 0:
                         self._valid_step(global_step + 1, valid_data_loader)
@@ -213,14 +238,17 @@ class Trainer:
             model_save_path = os.path.join(self.args.checkpoints_dir, f'{self.args.model_basename}-{global_step}.pt')
             torch.save(checkpoint_dict, model_save_path)
 
-    def _maybe_report_step(self, batch_loss: float, step: int) -> None:
+    def _maybe_report_step(self, batch_loss: float, batch_throughput: float, step: int) -> None:
         if self.wb_run is None:
             return
 
         for group_id, group_lr in enumerate(self.lr_scheduler.get_last_lr()):
             self.wb_run.log({f'learning_rate/group-{group_id}': group_lr}, step=step)
 
-        self.wb_run.log({'loss/batch_loss': batch_loss}, step=step)
+        self.wb_run.log({
+            'loss/batch_loss': batch_loss,
+            'throughput': batch_throughput,
+        }, step=step)
 
     def _maybe_report_valid_step(
         self,

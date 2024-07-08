@@ -99,11 +99,16 @@ def eval_model(
     if args.ddp:
         batch_iter = tqdm(
             eval_data_loader,
-            desc=f'Evaluating model on rank {args.rank}',
+            desc=f'GPU{args.rank} - Evaluating model',
+            ncols=120,
             disable=args.local_rank != 0,
         )
     else:
-        batch_iter = tqdm(eval_data_loader, desc='Evaluating model')
+        batch_iter = tqdm(
+            eval_data_loader,
+            desc='Evaluating model',
+            ncols=120,
+        )
 
     is_training = model.training
     model.eval()
