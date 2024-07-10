@@ -152,6 +152,8 @@ class Trainer:
 
                 # accumulates scaled gradients
                 self.scaler.scale(loss).backward()
+                if self.device.type == 'cuda':
+                    torch.cuda.synchronize()
                 batch_fb_time += time.monotonic() - ts
 
                 if (batch_idx + 1) % self.args.accum_step == 0 or batch_idx + 1 == len(train_data_loader):
