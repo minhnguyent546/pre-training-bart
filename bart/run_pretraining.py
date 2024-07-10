@@ -51,8 +51,19 @@ def train_model(args: argparse.Namespace):
     train_sampler = None
     test_sampler = None
     if args.ddp:
-        train_sampler = DistributedSampler(raw_dataset['train'], shuffle=True, seed=args.seed)
-        test_sampler = DistributedSampler(raw_dataset['test'], shuffle=False, seed=args.seed)
+        train_sampler = DistributedSampler(
+            raw_dataset['train'],
+            num_replicas=args.world_size,
+            rank=args.rank,
+            shuffle=True,
+            seed=args.seed)
+        test_sampler = DistributedSampler(
+            raw_dataset['test'],
+            num_replicas=args.world_size,
+            rank=args.rank,
+            shuffle=False,
+            seed=args.seed,
+        )
     train_data_loader = DataLoader(
         raw_dataset['train'],
         batch_size=args.train_batch_size,

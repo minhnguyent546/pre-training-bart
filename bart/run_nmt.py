@@ -62,7 +62,13 @@ def run_nmt(args: argparse.Namespace):
             args.src_seq_length, args.target_seq_length,
         )
         if args.ddp:
-            train_sampler = DistributedSampler(train_dataset, shuffle=True, seed=args.seed)
+            train_sampler = DistributedSampler(
+                train_dataset,
+                num_replicas=args.world_size,
+                rank=args.rank,
+                shuffle=True,
+                seed=args.seed,
+            )
         train_data_loader = DataLoader(
             train_dataset,
             batch_size=args.train_batch_size, shuffle=(train_sampler is None),
@@ -75,7 +81,14 @@ def run_nmt(args: argparse.Namespace):
             args.src_seq_length, args.target_seq_length,
         )
         if args.ddp:
-            validation_sampler = DistributedSampler(validation_dataset, shuffle=False, seed=args.seed, drop_last=True)
+            validation_sampler = DistributedSampler(
+                validation_dataset,
+                num_replicas=args.world_size,
+                rank=args.rank,
+                shuffle=False,
+                seed=args.seed,
+                drop_last=True,
+            )
         validation_data_loader = DataLoader(
             validation_dataset,
             batch_size=args.eval_batch_size, shuffle=False,
@@ -88,7 +101,14 @@ def run_nmt(args: argparse.Namespace):
             args.src_seq_length, args.target_seq_length,
         )
         if args.ddp:
-            test_sampler = DistributedSampler(test_dataset, shuffle=False, seed=args.seed, drop_last=True)
+            test_sampler = DistributedSampler(
+                test_dataset,
+                num_replicas=args.world_size,
+                rank=args.rank,
+                shuffle=False,
+                seed=args.seed,
+                drop_last=True,
+            )
         test_data_loader = DataLoader(
             test_dataset,
             batch_size=args.eval_batch_size, shuffle=False,
