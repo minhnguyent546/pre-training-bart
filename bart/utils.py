@@ -59,10 +59,6 @@ def setup_ddp(args: argparse.Namespace) -> None:
                 else:
                     print(f'{key} per GPU is {getattr(args, key)}')
 
-        # add offset for seed
-        setattr(args, 'seed', getattr(args, 'seed') + args.rank)
-        print(f'Training with seed {args.seed} on rank {args.rank}')
-
 def chunks(data: list[Any] | str, chunk_size: int = 1_000):
     for i in range(0, len(data), chunk_size):
         yield data[i:i+chunk_size]
